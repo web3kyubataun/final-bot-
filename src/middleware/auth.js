@@ -1,76 +1,74 @@
 const store = require('../store');
 const config = require('../config');
 
-/**
- * Middleware: register user and check ban status.
- */
+/** Register user & block banned users */
 async function userMiddleware(ctx, next) {
   if (!ctx.from) return next();
   const userId = ctx.from.id;
   const username = ctx.from.username || ctx.from.first_name || 'unknown';
   store.getOrCreateUser(userId, username);
-
   const user = store.getUser(userId);
-  if (user && user.banned) {
+  if (user?.banned) {
     return ctx.reply('🚫 You are banned from using this bot.');
   }
   return next();
 }
 
-/**
- * Check if user has access in this group based on access mode.
- */
-async function checkGroupAccess(ctx) {
-  const groupId = ctx.chat?.id?.toString();
-  const userId = ctx.from?.id;
-  if (!groupId || !userId) return false;
-
-  const group = store.getGroup(groupId);
-  if (!group) return false;
-
-  const mode = group.accessMode || 'all';
-
-  if (mode === 'all') return true;
-  if (mode === 'whitelist') return group.whitelist.has(userId);
-
-  if (mode === 'group') {
-    try {
-      const member = await ctx.telegram.getChatMember(groupId, userId);
-      return ['member', 'administrator', 'creator'].includes(member.status);
-    } catch {
-      return false;
-    }
-  }
-  return false;
-}
-
-/**
- * Middleware: only owner can use this command.
- */
+/** Owner only — works in group and DM */
 function ownerOnly(ctx, next) {
-  if (ctx.from?.id === config.OWNER_ID) return next();
+  if (String(ctx.from?.id) === String(config.OWNER_ID)) return next();
   return ctx.reply('⛔ Only the bot owner can use this command.');
 }
 
-/**
- * Middleware: owner or group admin.
- */
+/** Admin only — works correctly in group AND DM contexts */
 async function adminOnly(ctx, next) {
-  if (!ctx.from) return;
-  const groupId = ctx.chat?.id?.toString();
-  const userId = ctx.from.id;
+  const userId = ctx.from?.id;
+  if (!userId) return;
 
-  if (userId === config.OWNER_ID) return next();
+  // Owner always passes
+  if (String(userId) === String(config.OWNER_ID)) return next();
 
-  if (groupId && store.isAdmin(groupId, userId)) return next();
+  const chatType = ctx.chat?.type;
+  const groupId = chatType !== 'private' ? ctx.chat?.id?.toString() : null;
 
-  // Also allow Telegram group admins
-  try {
-    const member = await ctx.telegram.getChatMember(groupId, userId);
-    if (['administrator', 'creator'].includes(member.status)) return next();
-  } catch {}
+  // In-group: check bot-admin list OR Telegram admin role
+  if (groupId) {
+    if (store.isAdmin(groupId, userId)) return next();
+    try {
+      const member = await ctx.telegram.getChatMember(groupId, userId);
+      if (['administrator', 'creator'].includes(member.status)) return next();
+    } catch { /* ignore */ }
+  }
+
+  // In DM: check if user is admin of ANY registered group
+  if (!groupId) {
+    const groups = store.getGroupsForAdmin(userId);
+    if (groups.length > 0) return next();
+  }
 
   return ctx.reply('⛔ This command is for admins only.');
 }
 
-module.exports = { userMiddleware, checkGroupAccess, ownerOnly, adminOnly };
+/** Check if user has access to a group based on its access mode */
+async function checkGroupAccess(ctx, groupId) {
+  const gid = groupId || ctx.chat?.id?.toString();
+  const userId = ctx.from?.id;
+  if (!gid || !userId) return false;
+
+  const group = store.getGroup(gid);
+  if (!group) return false;
+
+  const mode = group.accessMode || 'all';
+  if (mode === 'all') return true;
+  if (mode === 'whitelist') return group.whitelist.has(String(userId));
+
+  if (mode === 'group') {
+    try {
+      const member = await ctx.telegram.getChatMember(gid, userId);
+      return ['member', 'administrator', 'creator'].includes(member.status);
+    } catch { return false; }
+  }
+  return false;
+}
+
+module.exports = { userMiddleware, ownerOnly, adminOnly, checkGroupAccess };

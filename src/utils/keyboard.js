@@ -1,160 +1,140 @@
 const { Markup } = require('telegraf');
 
-// ═══════════════════════════════════════════════
-//  USER KEYBOARDS
-// ═══════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════
+//  DIVIDERS & HELPERS
+// ═══════════════════════════════════════════════════════
+const D = '▸'; // section arrow
 
-/** Persistent bottom keyboard for all users */
+// ═══════════════════════════════════════════════════════
+//  USER KEYBOARDS
+// ═══════════════════════════════════════════════════════
+
 function mainMenuKeyboard() {
   return Markup.keyboard([
     ['🎯 Tasks', '⚡ Raids'],
     ['🏆 Leaderboard', '👤 My Profile'],
-    ['⚙️ Settings'],
+    ['⚙️ Settings', '❓ Help'],
   ]).resize();
 }
 
-/** Profile page inline buttons */
 function profileKeyboard(user) {
-  const notifLabel = user.notifications === false ? '🔔 Enable Notifications' : '🔕 Disable Notifications';
+  const notifBtn = user?.notifications === false
+    ? '🔔 Enable Notifications'
+    : '🔕 Disable Notifications';
   return Markup.inlineKeyboard([
     [Markup.button.callback('🐦 Set Twitter', 'set_twitter'), Markup.button.callback('👛 Set Wallet', 'set_wallet')],
-    [Markup.button.callback(notifLabel, 'toggle_notif')],
-    [Markup.button.callback('🔄 Refresh Stats', 'refresh_profile')],
+    [Markup.button.callback('💬 Set Discord', 'set_discord'), Markup.button.callback(notifBtn, 'toggle_notif')],
+    [Markup.button.callback('🔄 Refresh', 'refresh_profile'), Markup.button.callback('❌ Close', 'close_msg')],
   ]);
 }
 
-/** Settings page inline buttons */
 function settingsKeyboard(user) {
-  const notifLabel = user.notifications === false ? '🔔 Enable Notifications' : '🔕 Disable Notifications';
+  const notifBtn = user?.notifications === false
+    ? '🔔 Enable Notifications'
+    : '🔕 Disable Notifications';
   return Markup.inlineKeyboard([
-    [Markup.button.callback(notifLabel, 'toggle_notif')],
-    [Markup.button.callback('🐦 Update Twitter', 'set_twitter'), Markup.button.callback('👛 Update Wallet', 'set_wallet')],
+    [Markup.button.callback(notifBtn, 'toggle_notif')],
+    [Markup.button.callback('🐦 Set Twitter', 'set_twitter'), Markup.button.callback('👛 Set Wallet', 'set_wallet')],
+    [Markup.button.callback('💬 Set Discord', 'set_discord')],
     [Markup.button.callback('❌ Close', 'close_msg')],
   ]);
 }
 
-/** Task card submit button */
-function taskCardKeyboard(taskId, taskLink) {
-  return Markup.inlineKeyboard([
-    [Markup.button.url('🔗 Open Link', taskLink)],
-    [Markup.button.callback('📤 Submit Proof', `do_submit_${taskId}`)],
-  ]);
+function taskCardKeyboard(taskId, taskLink, btnLabel) {
+  const rows = [];
+  if (taskLink) rows.push([Markup.button.url(`🔗 ${btnLabel || 'Open Link'}`, taskLink)]);
+  rows.push([Markup.button.callback('📤 Submit Proof', `do_submit_${taskId}`)]);
+  return Markup.inlineKeyboard(rows);
 }
 
-/** Task list inline buttons */
 function taskListKeyboard(tasks) {
   if (!tasks.length) return null;
-  const buttons = tasks.map(t => [
-    Markup.button.callback(
-      `${t.type === 'raid' ? '⚡' : '🎯'} ${t.title}  •  +${t.reward} pts`,
+  return Markup.inlineKeyboard(
+    tasks.map(t => [Markup.button.callback(
+      `${t.type === 'raid' ? '⚡' : '🎯'} ${t.title}  ·  +${t.reward} pts`,
       `view_task_${t.id}`
-    ),
-  ]);
-  return Markup.inlineKeyboard(buttons);
+    )])
+  );
 }
 
-/** Proof submission confirmation */
-function approvalKeyboard(submissionId) {
+function approvalKeyboard(subId) {
   return Markup.inlineKeyboard([
-    [
-      Markup.button.callback('✅  Approve', `approve_${submissionId}`),
-      Markup.button.callback('❌  Reject', `reject_${submissionId}`),
-    ],
+    [Markup.button.callback('✅  Approve', `approve_${subId}`), Markup.button.callback('❌  Reject', `reject_${subId}`)],
   ]);
 }
 
-// ═══════════════════════════════════════════════
-//  ADMIN KEYBOARDS
-// ═══════════════════════════════════════════════
+function cancelKeyboard(label = '❌ Cancel') {
+  return Markup.inlineKeyboard([[Markup.button.callback(label, 'cancel_flow')]]);
+}
 
-/** Full admin panel — all sections */
-function adminPanelKeyboard() {
+// ═══════════════════════════════════════════════════════
+//  ADMIN KEYBOARDS  (RoseBot-style)
+// ═══════════════════════════════════════════════════════
+
+function adminMainKeyboard(groupName) {
   return Markup.inlineKeyboard([
-    // Section: Campaigns
-    [Markup.button.callback('─────  📋 CAMPAIGNS  ─────', 'noop')],
-    [
-      Markup.button.callback('📝 Create Task', 'admin_create_task'),
-      Markup.button.callback('⚡ Create Raid', 'admin_create_raid'),
-    ],
-    [
-      Markup.button.callback('📊 View Tasks', 'admin_view_tasks'),
-      Markup.button.callback('🗑️ Delete Task', 'admin_delete_task'),
-    ],
+    // Header row (info only via noop)
+    [Markup.button.callback(`📋 CAMPAIGNS`, 'admin_section_campaigns')],
+    [Markup.button.callback('📝 Create Task', 'admin_create_task'), Markup.button.callback('⚡ Create Raid', 'admin_create_raid')],
+    [Markup.button.callback('📊 View Tasks', 'admin_view_tasks'), Markup.button.callback('🗑 Delete Task', 'admin_delete_task_menu')],
 
-    // Section: Submissions
-    [Markup.button.callback('─────  📬 SUBMISSIONS  ─────', 'noop')],
-    [
-      Markup.button.callback('⏳ Pending', 'admin_view_submissions'),
-      Markup.button.callback('✅ Approved', 'admin_view_approved'),
-      Markup.button.callback('❌ Rejected', 'admin_view_rejected'),
-    ],
+    [Markup.button.callback(`📬 SUBMISSIONS`, 'admin_section_subs')],
+    [Markup.button.callback('⏳ Pending', 'admin_subs_pending'), Markup.button.callback('✅ Approved', 'admin_subs_approved'), Markup.button.callback('❌ Rejected', 'admin_subs_rejected')],
 
-    // Section: Broadcast
-    [Markup.button.callback('─────  📢 BROADCAST  ─────', 'noop')],
-    [
-      Markup.button.callback('📣 Announce to Group', 'admin_announce'),
-      Markup.button.callback('📨 DM All Users', 'admin_dm_all'),
-    ],
+    [Markup.button.callback(`📢 BROADCAST`, 'admin_section_bc')],
+    [Markup.button.callback('📣 Announce to Group', 'admin_announce'), Markup.button.callback('📨 DM All Users', 'admin_dm_all')],
 
-    // Section: User Management
-    [Markup.button.callback('─────  👤 USERS  ─────', 'noop')],
-    [
-      Markup.button.callback('👥 View Users', 'admin_manage_users'),
-      Markup.button.callback('🚫 Ban User', 'admin_ban_user'),
-      Markup.button.callback('✅ Unban User', 'admin_unban_user'),
-    ],
-    [
-      Markup.button.callback('➕ Add Admin', 'admin_add_admin'),
-      Markup.button.callback('➖ Remove Admin', 'admin_remove_admin'),
-    ],
+    [Markup.button.callback(`👤 USERS`, 'admin_section_users')],
+    [Markup.button.callback('👥 View Users', 'admin_view_users'), Markup.button.callback('🚫 Ban User', 'admin_ban'), Markup.button.callback('✅ Unban', 'admin_unban')],
+    [Markup.button.callback('➕ Add Admin', 'admin_add_admin'), Markup.button.callback('➖ Remove Admin', 'admin_rem_admin')],
 
-    // Section: Access Control
-    [Markup.button.callback('─────  🔐 ACCESS CONTROL  ─────', 'noop')],
-    [
-      Markup.button.callback('🌐 All Users', 'admin_mode_all'),
-      Markup.button.callback('👥 Group Only', 'admin_mode_group'),
-      Markup.button.callback('📋 Whitelist', 'admin_mode_whitelist'),
-    ],
+    [Markup.button.callback(`🔐 ACCESS CONTROL`, 'admin_section_access')],
+    [Markup.button.callback('🌐 All', 'admin_mode_all'), Markup.button.callback('👥 Group Only', 'admin_mode_group'), Markup.button.callback('📋 Whitelist', 'admin_mode_whitelist')],
 
-    // Section: Google Sheets
-    [Markup.button.callback('─────  📊 GOOGLE SHEETS  ─────', 'noop')],
-    [
-      Markup.button.callback('📧 Add Email', 'admin_add_email'),
-    ],
+    [Markup.button.callback(`⚙️ SETUP & SETTINGS`, 'admin_section_setup')],
+    [Markup.button.callback('📌 Setup Topics', 'admin_setup_topics'), Markup.button.callback('📧 Add Email', 'admin_add_email')],
+    [Markup.button.callback('📊 Group Stats', 'admin_stats'), Markup.button.callback('🔗 Set Group Link', 'admin_set_link')],
 
-    // Close
-    [Markup.button.callback('❌  Close Panel', 'admin_close')],
+    [Markup.button.callback('✖️  Close Panel', 'admin_close')],
   ]);
 }
 
-/** Task delete list */
 function taskDeleteKeyboard(tasks) {
-  if (!tasks.length) return null;
-  const buttons = tasks.map(t => [
-    Markup.button.callback(
-      `🗑️ [${t.id}] ${t.title}`,
-      `del_task_${t.id}`
-    ),
+  const rows = tasks.map(t => [
+    Markup.button.callback(`🗑 [${t.id}] ${t.type === 'raid' ? '⚡' : '🎯'} ${t.title}`, `del_task_${t.id}`)
   ]);
-  buttons.push([Markup.button.callback('🔙 Back to Panel', 'back_admin')]);
-  return Markup.inlineKeyboard(buttons);
+  rows.push([Markup.button.callback('🔙 Back', 'back_admin')]);
+  return Markup.inlineKeyboard(rows);
 }
 
-/** Cancel button for input flows */
-function cancelKeyboard() {
-  return Markup.inlineKeyboard([
-    [Markup.button.callback('❌ Cancel', 'cancel_flow')],
+function topicsSetupKeyboard(groupId) {
+  const types = [
+    ['getstarted', '🚀 Get Started'],
+    ['notifications', '🔔 Notifications'],
+    ['quests', '🎯 Quests'],
+    ['raids', '⚡ Raids'],
+    ['leaderboard', '🏆 Leaderboard'],
+    ['connect', '🐦 Connect'],
+    ['announcements', '📢 Announcements'],
+    ['submissions', '📋 Submissions'],
+    ['general', '💬 General'],
+  ];
+  const rows = types.map(([type, label]) => [
+    Markup.button.callback(`${label}`, `set_topic_${type}`)
   ]);
+  rows.push([Markup.button.callback('🔙 Back', 'back_admin')]);
+  return Markup.inlineKeyboard(rows);
+}
+
+function groupSelectorKeyboard(groups) {
+  const rows = groups.map(g => [
+    Markup.button.callback(`📋 ${g.name || g.id}`, `select_group_${g.id}`)
+  ]);
+  return Markup.inlineKeyboard(rows);
 }
 
 module.exports = {
-  mainMenuKeyboard,
-  profileKeyboard,
-  settingsKeyboard,
-  taskCardKeyboard,
-  taskListKeyboard,
-  approvalKeyboard,
-  adminPanelKeyboard,
-  taskDeleteKeyboard,
-  cancelKeyboard,
+  mainMenuKeyboard, profileKeyboard, settingsKeyboard,
+  taskCardKeyboard, taskListKeyboard, approvalKeyboard, cancelKeyboard,
+  adminMainKeyboard, taskDeleteKeyboard, topicsSetupKeyboard, groupSelectorKeyboard,
 };

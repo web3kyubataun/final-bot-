@@ -1,12 +1,17 @@
 require('dotenv').config();
 
+const rawOwnerId = process.env.BOT_OWNER_ID || process.env.OWNER_ID || '0';
+
 module.exports = {
   BOT_TOKEN: process.env.BOT_TOKEN,
-  OWNER_ID: parseInt(process.env.OWNER_ID || '0'),
-  // Paste the entire google-service-account.json content as a string here (preferred)
+  OWNER_ID: parseInt(rawOwnerId, 10),
+
+  // Google Sheets — paste entire service account JSON as string
   GOOGLE_SERVICE_ACCOUNT_JSON: process.env.GOOGLE_SERVICE_ACCOUNT_JSON || '',
-  // OR use a file path (fallback, only if above is empty)
-  GOOGLE_SERVICE_ACCOUNT_PATH: process.env.GOOGLE_SERVICE_ACCOUNT_PATH || './google-service-account.json',
-  DEFAULT_SHARE_EMAIL: process.env.DEFAULT_SHARE_EMAIL || '',
+
+  // Twitter/X API (optional — for tweet verification)
   TWITTER_BEARER_TOKEN: process.env.TWITTER_BEARER_TOKEN || '',
+
+  // Default email to share new sheets with
+  DEFAULT_SHARE_EMAIL: process.env.DEFAULT_SHARE_EMAIL || '',
 };

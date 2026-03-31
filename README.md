@@ -1,34 +1,37 @@
-# Telegram Premium Bot — Group Automation + Raid + Task System
+# Telegram Premium Bot — Group Automation + Task + Raid System
 
-A production-ready Telegram bot built with Telegraf.js. Supports multiple groups, task/raid campaigns, Google Sheets logging, admin approval flows, and leaderboards.
+A fully-featured, production-ready Telegram bot built with Telegraf.js.  
+Multi-group support, forum topic routing, RoseBot-style admin panel, Google Sheets integration, and a full approval workflow.
 
 ---
 
 ## Features
 
 - **Multi-group support** — each group gets its own Google Sheet
-- **Task & Raid system** — create campaigns with proof submission
-- **Google Sheets** — auto-creates sheet per group, logs submissions + users
-- **Approval workflow** — admins approve/reject via inline buttons in DM
-- **Leaderboard** — points-based ranking
-- **Access control** — all users / group members only / whitelist
-- **Admin panel** — inline keyboard panel in group
-- **Ban system** — ban/unban users
-- **Broadcast & Announce** — DM all users or group announce
-- **Twitter verification** — validates tweet URL format (+ API if token set)
-- **Notification control** — users can toggle DMs on/off
+- **Forum Topics** — auto-create or manually assign channels for raids, tasks, notifications, leaderboard, etc.
+- **Task & Raid system** — create campaigns with inline buttons and proof submission
+- **Google Sheets** — auto-creates a sheet per group, logs submissions + user data
+- **Approval workflow** — admins get DM notifications with ✅ Approve / ❌ Reject buttons
+- **RoseBot-style admin panel** — full inline keyboard panel with sections
+- **Leaderboard** — points-based ranking with visual bar chart
+- **Access control** — all users / group members only / whitelist modes
+- **Ban/Unban** — block users from the bot
+- **Broadcast & Announce** — DM all users or post in the group's announcements topic
+- **Twitter/X verification** — validates tweet URLs (+ API verification if bearer token set)
+- **Notification control** — users toggle DM notifications on/off
+- **Group setup guide** — `/setup` command walks admins through configuration
 
 ---
 
 ## Quick Start
 
-### 1. Clone / Download and install
+### 1. Install dependencies
 
 ```bash
 npm install
 ```
 
-### 2. Create `.env` from template
+### 2. Configure environment
 
 ```bash
 cp .env.example .env
@@ -38,107 +41,133 @@ Edit `.env`:
 
 ```env
 BOT_TOKEN=your_bot_token_from_BotFather
-OWNER_ID=your_telegram_user_id
-GOOGLE_SERVICE_ACCOUNT_PATH=./google-service-account.json
-DEFAULT_SHARE_EMAIL=youremail@gmail.com
+BOT_OWNER_ID=your_telegram_user_id
+GOOGLE_SERVICE_ACCOUNT_JSON={"type":"service_account",...}
+DEFAULT_SHARE_EMAIL=you@gmail.com
 ```
 
-### 3. Set up Google Service Account
+### 3. Google Sheets setup
 
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a project → Enable **Google Sheets API** and **Google Drive API**
-3. Create a **Service Account** → Download the JSON key
-4. Save the JSON file as `google-service-account.json` in the bot folder
-5. The bot will automatically share new sheets with `DEFAULT_SHARE_EMAIL`
+1. [Google Cloud Console](https://console.cloud.google.com/) → New Project
+2. Enable **Google Sheets API** and **Google Drive API**
+3. IAM → Service Accounts → Create → Add key → JSON
+4. Open the downloaded JSON, paste the **entire file content** (as one line) into `GOOGLE_SERVICE_ACCOUNT_JSON`
 
-### 4. Start the bot
+### 4. Run the bot
 
 ```bash
 node src/index.js
-# or with auto-reload:
+# Or with auto-reload:
 npx nodemon src/index.js
 ```
 
 ---
 
-## Bot Setup Flow
+## Setup Flow (First Time)
 
-1. Get your **Group ID** (add `@userinfobot` to your group, or forward a group message to it)
-2. Message the bot: `/addgroup -1001234567890`
-3. A Google Sheet is auto-created and shared with your email
-4. Add admins: `/addadmin 123456789` (in the group)
-5. Create tasks: `/createtask Retweet our post | https://x.com/post | 100`
-6. Create raids: `/createraid Follow our Twitter | https://x.com | 50`
+1. **Add the bot to your group** (make it an admin)
+2. **Register the group** — run `/addgroup` directly in the group (owner only)
+3. **Open admin panel** — run `/admin` in the group
+4. **Follow `/setup`** — step-by-step guide inside the group
+5. **Enable Forum Topics** (optional) — Group Settings → Topics → Enable → run `/autotopics`
+6. **Add admins** — `/addadmin <userId>` in the group
+7. **Create tasks** — use the admin panel `📝 Create Task` button
 
 ---
 
 ## Commands Reference
 
-### User Commands
+### 👑 Owner Commands (you only)
 
 | Command | Description |
 |---------|-------------|
-| `/start` | Start the bot, show menu |
-| `/submit <taskId> <proof>` | Submit proof for a task |
-| `/leaderboard` | View top 10 users |
-| `/profile` | Your points & stats |
-| `/settwitter <handle>` | Link your Twitter |
-| `/setwallet <address>` | Link your wallet |
-| `/notifications on\|off` | Toggle DM notifications |
-| `/help` | Full command list |
-
-### Admin Commands
-
-| Command | Description |
-|---------|-------------|
-| `/admin` | Open admin panel |
-| `/createtask Title \| Link \| Reward` | Create a task |
-| `/createraid Title \| Link \| Reward` | Create a raid |
-| `/announce <message>` | Group + DM announcement |
-| `/viewsubmissions` | See pending submissions |
-| `/addadmin <userId>` | Add group admin |
-| `/removeadmin <userId>` | Remove group admin |
-| `/ban <userId>` | Ban a user |
-| `/unban <userId>` | Unban a user |
-| `/setmode all\|group\|whitelist` | Set access mode |
-| `/addemail email@gmail.com` | Share sheet with email |
-
-### Owner Commands
-
-| Command | Description |
-|---------|-------------|
-| `/addgroup <groupId>` | Register a group |
+| `/addgroup` | Register the group (run inside the group OR `/addgroup -1001234567` from DM) |
+| `/removegroup` | Remove a group (run inside group or `/removegroup -1001234567` from DM) |
+| `/listgroups` | List all registered groups |
 | `/broadcast <message>` | DM all bot users |
+| `/ownerhelp` | Show all owner commands |
+
+### 🛠️ Admin Commands
+
+| Command | Description |
+|---------|-------------|
+| `/admin` | Open the full inline admin panel |
+| `/setup` | Step-by-step group setup guide |
+| `/stats` | Group statistics |
+| `/autotopics` | Auto-create all forum topics in the group |
+| `/settopic <type> <id>` | Manually set a forum topic ID |
+| `/listtopics` | Show all topic assignments |
+| `/postwelcome` | Post welcome message in Get Started topic |
+| `/setmode all\|group\|whitelist` | Set who can use the bot |
+| `/addadmin <userId>` | Add a group admin |
+| `/removeadmin <userId>` | Remove a group admin |
+
+**Admin Panel Sections** (all via `/admin` inline buttons):
+- 📋 **Campaigns** — Create Task, Create Raid, View Tasks, Delete Task
+- 📬 **Submissions** — View Pending / Approved / Rejected
+- 📢 **Broadcast** — Announce to group, DM all users
+- 👤 **Users** — View users, Ban, Unban, Add/Remove admins
+- 🔐 **Access Control** — All / Group Only / Whitelist
+- ⚙️ **Setup** — Set topics, Add email, Group stats, Set group link
+
+### 👤 User Commands
+
+All user interaction is through the bottom keyboard menu:
+- 🎯 **Tasks** — View and submit tasks
+- ⚡ **Raids** — View and join raids
+- 🏆 **Leaderboard** — Top earners
+- 👤 **My Profile** — Stats, points, rank
+- ⚙️ **Settings** — Twitter, Wallet, Discord, Notifications
+- ❓ **Help** — How to use the bot
 
 ---
 
-## Deployment Options
+## Forum Topic Types
 
-### Option A: Railway (Recommended — Free Tier Available)
+When you run `/autotopics` or `/settopic`, these types are available:
+
+| Type | Topic Name | Purpose |
+|------|-----------|---------|
+| `getstarted` | 🚀 Get Started | Onboarding, `/postwelcome` posts here |
+| `notifications` | 🔔 Notifications | New task/raid alerts |
+| `quests` | 🎯 Quests | Active task cards |
+| `raids` | ⚡ Raids | Active raid cards |
+| `leaderboard` | 🏆 Leaderboard | Leaderboard posts |
+| `connect` | 🐦 Connect Twitter | Twitter linking |
+| `announcements` | 📢 Announcements | Admin broadcasts |
+| `submissions` | 📋 Submissions | Submission review |
+| `general` | 💬 General | General chat |
+
+To manually set a topic: `/settopic notifications 12345`
+*(Get the ID: right-click the topic → Copy Link → number at the end)*
+
+---
+
+## Deployment
+
+### Railway (Recommended — free tier available)
 1. Push to GitHub
-2. Connect repo to [Railway](https://railway.app)
-3. Add environment variables in Railway dashboard
-4. Deploy — Railway keeps it running 24/7
+2. [railway.app](https://railway.app) → New Project → Deploy from GitHub
+3. Add environment variables from `.env`
+4. Done — auto-restarts on crash
 
-### Option B: VPS (DigitalOcean / Hetzner — $4-6/month)
+### VPS (DigitalOcean / Hetzner — ~$5/month)
 ```bash
-# Install PM2 for process management
 npm install -g pm2
 pm2 start src/index.js --name telegram-bot
-pm2 save
-pm2 startup
+pm2 save && pm2 startup
 ```
 
-### Option C: Docker
+### Docker
 ```bash
 docker build -t telegram-bot .
 docker run -d --env-file .env telegram-bot
 ```
 
-### Option D: Replit (requires Always-On / $7/month Hacker plan)
-- Upload files to Replit
-- Add secrets in Replit's Secrets panel
-- Enable Always-On to keep running
+### Render
+1. New Web Service → Connect GitHub repo
+2. Build: `npm install` | Start: `node src/index.js`
+3. Add environment variables
 
 ---
 
@@ -146,35 +175,36 @@ docker run -d --env-file .env telegram-bot
 
 Each group gets its own spreadsheet with two tabs:
 
-**Submissions tab:**
-| Timestamp | UserID | Username | Task | Proof | Status | Points |
+**Submissions tab:**  
+`Timestamp | UserID | Username | Task | Proof | Status | Points`
 
-**Users tab:**
-| UserID | Username | Points | Twitter | Wallet | JoinedAt |
+**Users tab:**  
+`UserID | Username | Points | Twitter | Wallet | JoinedAt`
 
 ---
 
 ## Project Structure
 
 ```
-telegram-premium-bot/
+tgbot/
 ├── src/
-│   ├── index.js              # Entry point, bot setup
+│   ├── index.js              # Entry point & handler registration
 │   ├── config.js             # Environment config
 │   ├── store.js              # In-memory data store
+│   ├── sessions.js           # Multi-step session state
 │   ├── handlers/
-│   │   ├── owner.js          # Owner-only commands
-│   │   ├── admin.js          # Admin commands + approval callbacks
-│   │   └── user.js           # User commands + menu
+│   │   ├── owner.js          # addgroup, removegroup, broadcast
+│   │   ├── group.js          # setup, autotopics, settopic, stats
+│   │   ├── admin.js          # Admin panel + all inline flows
+│   │   └── user.js           # User menu, tasks, submissions
 │   ├── services/
-│   │   └── sheets.js         # Google Sheets integration
+│   │   └── sheets.js         # Google Sheets API integration
 │   ├── middleware/
 │   │   └── auth.js           # Auth, ban checks, access control
 │   └── utils/
-│       ├── keyboard.js       # Telegram keyboard helpers
+│       ├── keyboard.js       # All Telegram keyboard builders
 │       └── twitter.js        # Tweet URL validation
 ├── .env.example
-├── .dockerignore
 ├── Dockerfile
 ├── package.json
 └── README.md
@@ -184,20 +214,7 @@ telegram-premium-bot/
 
 ## Notes
 
-- Data is stored **in-memory** — it resets when the bot restarts. For persistent storage, add SQLite or MongoDB (see upgrade notes below).
-- The bot runs in **polling mode** — no webhook/domain setup needed.
-- All admin notification DMs require that admins have started the bot at least once (`/start`).
-
----
-
-## Upgrading to Persistent Storage
-
-To persist data across restarts, replace `store.js` with a database adapter:
-
-```bash
-npm install better-sqlite3
-# or
-npm install mongoose  # for MongoDB
-```
-
-Then swap the `store.js` in-memory objects with database read/write calls.
+- Data is **in-memory** — resets on restart. For persistence, swap `store.js` with SQLite (`better-sqlite3`) or MongoDB (`mongoose`).
+- Bot runs in **polling mode** — no domain or webhook required.
+- Admin DMs (approve/reject buttons) require the admin to have `/start`-ed the bot in DM at least once.
+- Group ID format: always a negative number like `-1001234567890`.
