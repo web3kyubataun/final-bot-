@@ -29,31 +29,23 @@ bot.use(userMiddleware);
 
 // ── /help ───────────────────────────────────────────────
 bot.command('help', async (ctx) => {
-  await ctx.reply(
-    `📖 <b>Command Reference</b>\n\n` +
-    `<b>👤 User Commands</b>\n` +
-    `/start — Start the bot\n` +
-    `/submit &lt;taskId&gt; &lt;proof&gt; — Submit task proof\n` +
-    `/leaderboard — View top users\n` +
-    `/profile — Your stats\n` +
-    `/settwitter &lt;handle&gt; — Set your Twitter\n` +
-    `/setwallet &lt;address&gt; — Set your wallet\n` +
-    `/notifications on|off — Toggle DMs\n\n` +
-    `<b>🛠️ Admin Commands</b>\n` +
-    `/admin — Open admin panel\n` +
-    `/createtask Title | Link | Reward\n` +
-    `/createraid Title | Link | Reward\n` +
-    `/announce &lt;message&gt;\n` +
-    `/viewsubmissions — Pending submissions\n` +
-    `/addadmin &lt;userId&gt;\n` +
-    `/removeadmin &lt;userId&gt;\n` +
-    `/ban &lt;userId&gt; | /unban &lt;userId&gt;\n` +
-    `/setmode all|group|whitelist\n` +
-    `/addemail &lt;gmail&gt;\n\n` +
-    `<b>👑 Owner Commands</b>\n` +
+  await ctx.replyWithHTML(
+    `📖 <b>How to Use This Bot</b>\n` +
+    `${'─'.repeat(28)}\n\n` +
+    `<b>👤 For Users</b>\n` +
+    `Everything is in the <b>bottom menu buttons</b>:\n` +
+    `• 🎯 <b>Tasks</b> — View & submit tasks\n` +
+    `• ⚡ <b>Raids</b> — View & join raids\n` +
+    `• 🏆 <b>Leaderboard</b> — See top earners\n` +
+    `• 👤 <b>My Profile</b> — Points, rank & settings\n` +
+    `• ⚙️ <b>Settings</b> — Twitter, wallet, notifications\n\n` +
+    `<b>🛠️ For Admins</b>\n` +
+    `Use <b>/admin</b> to open the full admin panel.\n` +
+    `All actions are available as buttons — no commands needed!\n\n` +
+    `<b>👑 For Owner Only</b>\n` +
     `/addgroup &lt;groupId&gt; — Register a group\n` +
-    `/broadcast &lt;message&gt; — Message all users`,
-    { parse_mode: 'HTML' }
+    `/broadcast &lt;message&gt; — DM all users\n\n` +
+    `<i>Tip: If you don't see the menu buttons, tap the keyboard icon next to the message bar.</i>`
   );
 });
 

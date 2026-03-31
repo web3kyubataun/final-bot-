@@ -1,0 +1,7 @@
+{
+  "BOT_TOKEN": "7412356789:AAFxyz1234abcDEFghiJKLmno5678pqrSTUv",
+  "OWNER_ID": "123456789",
+  "GOOGLE_SERVICE_ACCOUNT_JSON": "{\"type\":\"service_account\",\"project_id\":\"your-project-id\",\"private_key_id\":\"abc123\",\"private_key\":\"-----BEGIN RSA PRIVATE KEY-----\\nMIIE...\\n-----END RSA PRIVATE KEY-----\\n\",\"client_email\":\"your-bot@your-project.iam.gserviceaccount.com\",\"client_id\":\"1234567890\",\"auth_uri\":\"https://accounts.google.com/o/oauth2/auth\",\"token_uri\":\"https://oauth2.googleapis.com/token\"}",
+  "DEFAULT_SHARE_EMAIL": "yourname@gmail.com",
+  "TWITTER_BEARER_TOKEN": ""
+}

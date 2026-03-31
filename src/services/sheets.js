@@ -6,10 +6,25 @@ let auth = null;
 
 function getAuth() {
   if (auth) return auth;
-  if (!fs.existsSync(config.GOOGLE_SERVICE_ACCOUNT_PATH)) {
-    throw new Error(`Google Service Account JSON not found at: ${config.GOOGLE_SERVICE_ACCOUNT_PATH}`);
+
+  let credentials;
+
+  if (config.GOOGLE_SERVICE_ACCOUNT_JSON) {
+    // Preferred: JSON content pasted directly as an environment variable
+    try {
+      credentials = JSON.parse(config.GOOGLE_SERVICE_ACCOUNT_JSON);
+    } catch (e) {
+      throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON. Make sure you pasted the entire file content.');
+    }
+  } else if (fs.existsSync(config.GOOGLE_SERVICE_ACCOUNT_PATH)) {
+    // Fallback: read from a local file
+    credentials = JSON.parse(fs.readFileSync(config.GOOGLE_SERVICE_ACCOUNT_PATH, 'utf-8'));
+  } else {
+    throw new Error(
+      'Google credentials not found. Set GOOGLE_SERVICE_ACCOUNT_JSON variable with your service account JSON content.'
+    );
   }
-  const credentials = JSON.parse(fs.readFileSync(config.GOOGLE_SERVICE_ACCOUNT_PATH, 'utf-8'));
+
   auth = new google.auth.GoogleAuth({
     credentials,
     scopes: [

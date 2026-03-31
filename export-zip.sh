@@ -1,26 +1,24 @@
 #!/bin/bash
 # =============================================
-# Export the Telegram Bot project as a ZIP file
+# Export the Telegram Bot project as a tar.gz archive
 # =============================================
 
-OUTPUT="telegram-premium-bot.zip"
+OUTPUT="telegram-premium-bot.tar.gz"
+PARENT_DIR=$(dirname "$0")
 
-echo "📦 Creating ZIP: $OUTPUT ..."
+echo "📦 Creating archive: $OUTPUT ..."
 
-# Remove old zip if exists
-rm -f "$OUTPUT"
+cd "$PARENT_DIR/.." || exit 1
 
-# Create zip, excluding node_modules, .env, and git files
-zip -r "$OUTPUT" . \
-  --exclude "node_modules/*" \
-  --exclude ".env" \
-  --exclude ".git/*" \
-  --exclude "*.log" \
-  --exclude "$OUTPUT"
+# Create archive, excluding node_modules, .env, and git files
+tar \
+  --exclude="tgbot/node_modules" \
+  --exclude="tgbot/.env" \
+  --exclude="tgbot/.git" \
+  --exclude="tgbot/*.log" \
+  --exclude="tgbot/$OUTPUT" \
+  -czf "$OUTPUT" tgbot
 
 echo ""
 echo "✅ Done! File created: $OUTPUT"
-echo "   Size: $(du -sh "$OUTPUT" | cut -f1)"
-echo ""
-echo "📁 Contents:"
-unzip -l "$OUTPUT" | tail -n +4 | head -n -2
+ls -lh "$OUTPUT"
