@@ -1,14 +1,22 @@
 {
-  "name": "@workspace/telegram-bot",
-  "version": "0.0.0",
-  "private": true,
-  "type": "module",
+  "name": "telegram-premium-bot",
+  "version": "1.0.0",
+  "description": "Premium Telegram Group Automation + Raid + Task System",
+  "main": "src/index.js",
   "scripts": {
-    "dev": "node --enable-source-maps src/index.js",
-    "start": "node --enable-source-maps src/index.js"
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js"
   },
   "dependencies": {
     "telegraf": "^4.16.3",
-    "googleapis": "^144.0.0"
+    "googleapis": "^144.0.0",
+    "dotenv": "^16.4.5",
+    "node-fetch": "^2.7.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
