@@ -5,14 +5,13 @@ const config = require('../config');
 
 const delay = ms => new Promise(r => setTimeout(r, ms));
 
-// ── /addgroup ──────────────────────────────────────────
-// Run inside the group  OR  /addgroup -1001234567 [GroupName]  from DM
+// ── /addgroup ──────────────────────────────────────────────────
 async function handleAddGroup(ctx) {
   const chatType = ctx.chat?.type;
   let groupId, groupName;
 
   if (chatType === 'group' || chatType === 'supergroup') {
-    groupId  = String(ctx.chat.id);
+    groupId   = String(ctx.chat.id);
     groupName = ctx.chat.title;
   } else {
     const args = ctx.message.text.split(' ').slice(1);
@@ -31,23 +30,32 @@ async function handleAddGroup(ctx) {
     return ctx.replyWithHTML(`⚠️ Group <code>${groupId}</code> is already registered.`);
   }
 
-  await ctx.reply('⏳ Registering group and creating Google Sheet...');
+  await ctx.reply('⏳ Registering group and trying to create Google Sheet...');
 
-  let sheetId = 'none';
-  let sheetNote = '';
+  let sheetId  = 'none';
+  let sheetMsg = '';
+
   try {
-    sheetId = await sheets.createGroupSheet(groupName || `Group_${groupId}`);
-    sheetNote = `📊 Sheet: <code>${sheetId}</code>`;
+    sheetId  = await sheets.createGroupSheet(groupName || `Group_${groupId}`);
+    sheetMsg = `📊 Sheet created automatically ✅\nID: <code>${sheetId}</code>`;
   } catch (e) {
-    console.error('Sheet creation error:', e.message);
-    sheetNote =
-      `⚠️ <b>Sheet creation failed:</b> ${e.message}\n\n` +
-      `<b>How to fix:</b>\n` +
-      `1. Go to <a href="https://console.cloud.google.com">Google Cloud Console</a>\n` +
-      `2. Select your project → <b>APIs & Services</b>\n` +
-      `3. Enable both <b>Google Sheets API</b> and <b>Google Drive API</b>\n` +
-      `4. Then run /addgroup again\n\n` +
-      `<i>Group registered without a sheet for now.</i>`;
+    console.error('Sheet auto-creation error:', e.message);
+
+    // Get service account email from credentials for user guidance
+    const saEmail = sheets.getServiceAccountEmail();
+    const emailLine = saEmail
+      ? `3. Share the sheet with this email <b>(Editor access)</b>:\n   <code>${saEmail}</code>`
+      : `3. Share the sheet with your service account email <b>(Editor access)</b>`;
+
+    sheetMsg =
+      `⚠️ <b>Auto sheet creation failed.</b>\n\n` +
+      `<b>Fix — create the sheet manually (1 min):</b>\n` +
+      `1. Go to <a href="https://sheets.google.com">sheets.google.com</a> and create a new spreadsheet\n` +
+      `2. Copy the Sheet ID from the URL:\n` +
+      `   <code>docs.google.com/spreadsheets/d/<b>[THIS PART]</b>/edit</code>\n` +
+      `${emailLine}\n` +
+      `4. Run: <code>/setsheet ${groupId} YOUR_SHEET_ID</code>\n\n` +
+      `<i>Group is registered without a sheet for now.</i>`;
   }
 
   const group = store.addGroup(groupId, sheetId, ctx.from.id);
@@ -56,24 +64,66 @@ async function handleAddGroup(ctx) {
   await ctx.replyWithHTML(
     `✅ <b>Group Registered!</b>\n\n` +
     `🆔 ID: <code>${groupId}</code>\n` +
-    `📛 Name: ${groupName || 'Unknown'}\n` +
-    `${sheetNote}\n\n` +
-    `<b>Next steps:</b>\n` +
-    `• Add admins: run <code>/addadmin &lt;userId&gt;</code> in the group\n` +
-    `• Run <code>/setup</code> in the group for full setup guide`
+    `📛 Name: ${groupName || 'Unknown'}\n\n` +
+    `${sheetMsg}`
   );
 }
 
-// ── /removegroup ─────────────────────────────────────────
+// ── /setsheet <groupId> <sheetId> ─────────────────────────────
+// Links a manually-created sheet to a group AND sets up its headers.
+async function handleSetSheet(ctx) {
+  const args    = ctx.message.text.split(' ').slice(1);
+  const groupId = args[0];
+  const sheetId = args[1];
+
+  if (!groupId || !sheetId) {
+    return ctx.replyWithHTML(
+      `<b>Usage:</b> <code>/setsheet &lt;groupId&gt; &lt;sheetId&gt;</code>\n\n` +
+      `<b>Example:</b>\n` +
+      `<code>/setsheet -1001234567890 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms</code>\n\n` +
+      `<b>How to get the Sheet ID:</b>\n` +
+      `Open your Google Sheet → look at the URL:\n` +
+      `<code>docs.google.com/spreadsheets/d/<b>[Sheet ID here]</b>/edit</code>`
+    );
+  }
+
+  if (!store.isGroupRegistered(groupId)) {
+    return ctx.replyWithHTML(`⚠️ Group <code>${groupId}</code> is not registered. Run /addgroup first.`);
+  }
+
+  await ctx.reply('⏳ Linking sheet and setting up headers...');
+
+  try {
+    await sheets.setupManualSheet(sheetId);
+    const group = store.getGroup(groupId);
+    group.sheetId = sheetId;
+    await ctx.replyWithHTML(
+      `✅ <b>Sheet linked successfully!</b>\n\n` +
+      `📊 Sheet ID: <code>${sheetId}</code>\n` +
+      `🗂 Headers (Submissions & Users tabs) created.\n\n` +
+      `Submissions will now be logged automatically.`
+    );
+  } catch (e) {
+    const saEmail = sheets.getServiceAccountEmail();
+    await ctx.replyWithHTML(
+      `❌ <b>Failed to access the sheet.</b>\n\n` +
+      `<b>Error:</b> ${e.message}\n\n` +
+      `<b>Most likely cause:</b> The sheet hasn't been shared with the service account.\n\n` +
+      (saEmail
+        ? `Share your Google Sheet with this email <b>(Editor access)</b>:\n<code>${saEmail}</code>`
+        : `Share your Google Sheet with your service account email (Editor access).`)
+    );
+  }
+}
+
+// ── /removegroup ──────────────────────────────────────────────
 async function handleRemoveGroup(ctx) {
   const chatType = ctx.chat?.type;
   let groupId;
-
   if (chatType === 'group' || chatType === 'supergroup') {
     groupId = String(ctx.chat.id);
   } else {
-    const args = ctx.message.text.split(' ').slice(1);
-    groupId = args[0];
+    groupId = ctx.message.text.split(' ')[1];
     if (!groupId) return ctx.reply('Usage: /removegroup <groupId>  OR run inside the group');
   }
 
@@ -89,62 +139,60 @@ async function handleRemoveGroup(ctx) {
   );
 }
 
-// ── /listgroups ───────────────────────────────────────────
+// ── /listgroups ───────────────────────────────────────────────
 async function handleListGroups(ctx) {
   const groups = store.getAllGroups();
   if (!groups.length) return ctx.reply('No groups registered yet.');
-
   const lines = groups.map((g, i) =>
     `${i + 1}. <b>${g.groupName || 'Unknown'}</b>\n` +
     `   🆔 <code>${g.id}</code>\n` +
-    `   🔐 Mode: ${g.accessMode}  |  👥 Admins: ${g.admins?.size || 0}\n` +
-    `   📊 Sheet: ${g.sheetId !== 'none' ? '✅' : '❌'}`
+    `   🔐 Mode: ${g.accessMode}  |  Admins: ${g.admins?.size || 0}\n` +
+    `   📊 Sheet: ${g.sheetId !== 'none' ? `✅ <code>${g.sheetId.slice(0, 16)}…</code>` : '❌ Not linked'}`
   ).join('\n\n');
-
   await ctx.replyWithHTML(`📋 <b>Registered Groups (${groups.length})</b>\n\n${lines}`);
 }
 
-// ── /broadcast ────────────────────────────────────────────
+// ── /broadcast ────────────────────────────────────────────────
 async function handleBroadcast(ctx) {
   const text = ctx.message.text.split(' ').slice(1).join(' ');
   if (!text) return ctx.reply('Usage: /broadcast <message>');
-
   const users = store.getAllUsers().filter(u => !u.banned && u.notifications !== false);
   await ctx.reply(`📤 Sending to ${users.length} users...`);
-
   let sent = 0, failed = 0;
   for (const user of users) {
-    try {
-      await ctx.telegram.sendMessage(user.id, `📢 <b>Broadcast</b>\n\n${text}`, { parse_mode: 'HTML' });
-      sent++;
-    } catch { failed++; }
+    try { await ctx.telegram.sendMessage(user.id, `📢 <b>Broadcast</b>\n\n${text}`, { parse_mode: 'HTML' }); sent++; }
+    catch { failed++; }
     await delay(50);
   }
   await ctx.reply(`✅ Done!  Sent: ${sent}  |  Failed: ${failed}`);
 }
 
-// ── /ownerhelp ────────────────────────────────────────────
+// ── /ownerhelp ────────────────────────────────────────────────
 async function handleOwnerHelp(ctx) {
-  const ownerList = config.OWNER_IDS.join(', ') || 'none';
+  const ownerList  = config.OWNER_IDS.join(', ') || 'none';
+  const saEmail    = sheets.getServiceAccountEmail();
   await ctx.replyWithHTML(
     `👑 <b>Owner Commands</b>\n` +
     `${'─'.repeat(30)}\n\n` +
-    `<b>Current Owners:</b> <code>${ownerList}</code>\n` +
-    `<i>Set BOT_OWNER_IDS=id1,id2 in .env for multiple owners</i>\n\n` +
-    `<b>Group Management</b>\n` +
-    `/addgroup — Whitelist a group (run inside OR DM with ID)\n` +
+    `<b>Owner IDs:</b> <code>${ownerList}</code>\n` +
+    (saEmail ? `<b>Service Account:</b>\n<code>${saEmail}</code>\n` : '') +
+    `\n<b>Group Management</b>\n` +
+    `/addgroup — Register & whitelist a group\n` +
     `/removegroup — Unregister a group\n` +
     `/listgroups — List all registered groups\n\n` +
+    `<b>Google Sheets</b>\n` +
+    `/setsheet &lt;groupId&gt; &lt;sheetId&gt; — Link a manually created sheet\n\n` +
     `<b>Broadcasting</b>\n` +
-    `/broadcast &lt;message&gt; — DM all bot users\n\n` +
-    `<b>Difference: Owners vs Admins</b>\n` +
-    `👑 <b>Owners</b>: Can whitelist/addgroup/removegroup. Set in .env.\n` +
-    `🛠 <b>Admins</b>: Can manage tasks/raids/submissions for their group. Added via /addadmin.`
+    `/broadcast &lt;msg&gt; — DM all bot users\n\n` +
+    `<b>Owners vs Admins</b>\n` +
+    `👑 <b>Owners</b>: Set in .env (BOT_OWNER_IDS). Can whitelist groups & manage sheets.\n` +
+    `🛠 <b>Admins</b>: Added per-group. Can manage tasks, raids & submissions.`
   );
 }
 
 function register(bot) {
   bot.command('addgroup',    ownerOnly, handleAddGroup);
+  bot.command('setsheet',    ownerOnly, handleSetSheet);
   bot.command('removegroup', ownerOnly, handleRemoveGroup);
   bot.command('listgroups',  ownerOnly, handleListGroups);
   bot.command('broadcast',   ownerOnly, handleBroadcast);
