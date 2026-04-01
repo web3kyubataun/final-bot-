@@ -3,50 +3,62 @@
  */
 
 const store = {
-  groups: {},       // groupId -> group object
-  users: {},        // userId -> user object
-  tasks: {},        // taskId -> task object
-  submissions: {},  // subId -> submission object
-  userSubmissions: {}, // userId -> Set of "groupId:taskId"
+  groups: {},
+  users: {},
+  tasks: {},
+  submissions: {},
+  userSubmissions: {},
+  adminContext: {},   // userId -> groupId (which group each admin is currently managing in DM)
   taskCounter: 0,
   submissionCounter: 0,
 };
+
+// ═══════════════════════════════════════════════
+//  ADMIN CONTEXT (for DM-based admin control)
+// ═══════════════════════════════════════════════
+
+function setAdminContext(userId, groupId) {
+  store.adminContext[String(userId)] = String(groupId);
+}
+
+function getAdminContext(userId) {
+  return store.adminContext[String(userId)] || null;
+}
+
+function clearAdminContext(userId) {
+  delete store.adminContext[String(userId)];
+}
 
 // ═══════════════════════════════════════════════
 //  GROUPS
 // ═══════════════════════════════════════════════
 
 function addGroup(groupId, sheetId, ownerId) {
-  if (!store.groups[groupId]) {
-    store.groups[groupId] = {
+  const gid = String(groupId);
+  if (!store.groups[gid]) {
+    store.groups[gid] = {
       sheetId: sheetId || 'none',
-      ownerId: ownerId || null,
+      ownerId: ownerId ? String(ownerId) : null,
       admins: new Set(),
-      accessMode: 'all',       // 'all' | 'group' | 'whitelist'
+      accessMode: 'all',
       whitelist: new Set(),
       extraEmails: [],
-      topics: {                 // Forum topic IDs
-        getstarted: null,
-        notifications: null,
-        quests: null,
-        leaderboard: null,
-        connect: null,
-        general: null,
-        raids: null,
-        announcements: null,
-        submissions: null,
+      topics: {
+        getstarted: null, notifications: null, quests: null,
+        raids: null, leaderboard: null, connect: null,
+        announcements: null, submissions: null, general: null,
       },
       groupLink: null,
       groupName: null,
       createdAt: new Date().toISOString(),
     };
   }
-  return store.groups[groupId];
+  return store.groups[gid];
 }
 
 function removeGroup(groupId) {
-  if (store.groups[groupId]) {
-    delete store.groups[groupId];
+  if (store.groups[String(groupId)]) {
+    delete store.groups[String(groupId)];
     return true;
   }
   return false;
@@ -77,10 +89,12 @@ function setGroupMeta(groupId, meta) {
   if (g) Object.assign(g, meta);
 }
 
+/** Get groups where userId is admin or owner */
 function getGroupsForAdmin(userId) {
-  const { OWNER_ID } = require('./config');
+  const { isOwner } = require('./middleware/auth');
+  const uid = String(userId);
   return Object.entries(store.groups)
-    .filter(([, g]) => g.admins.has(userId) || g.ownerId === userId || userId === OWNER_ID)
+    .filter(([, g]) => isOwner(userId) || g.admins.has(uid) || g.ownerId === uid)
     .map(([id, g]) => ({ id, name: g.groupName || id, ...g }));
 }
 
@@ -144,7 +158,7 @@ function createTask(groupId, title, link, reward, type, buttonLabel) {
     title,
     link,
     reward: parseInt(reward) || 0,
-    type, // 'task' | 'raid'
+    type,
     buttonLabel: buttonLabel || null,
     createdAt: new Date().toISOString(),
     active: true,
@@ -178,7 +192,7 @@ function getAllTasksForGroup(groupId) {
 //  SUBMISSIONS
 // ═══════════════════════════════════════════════
 
-function createSubmission(userId, username, groupId, taskId, taskTitle, proof, points) {
+function createSubmission(userId, username, groupId, taskId, taskTitle, proof, points, proofType, proofFileId) {
   const id = ++store.submissionCounter;
   store.submissions[id] = {
     id,
@@ -188,6 +202,8 @@ function createSubmission(userId, username, groupId, taskId, taskTitle, proof, p
     taskId,
     taskTitle,
     proof,
+    proofType: proofType || 'text', // 'text' | 'photo'
+    proofFileId: proofFileId || null,
     status: 'pending',
     points,
     createdAt: new Date().toISOString(),
@@ -244,8 +260,8 @@ function removeAdmin(groupId, userId) {
 }
 
 function isAdmin(groupId, userId) {
-  const { OWNER_ID } = require('./config');
-  if (String(userId) === String(OWNER_ID)) return true;
+  const { isOwner } = require('./middleware/auth');
+  if (isOwner(userId)) return true;
   const g = store.groups[String(groupId)];
   return g ? g.admins.has(String(userId)) : false;
 }
@@ -265,7 +281,7 @@ function setAccessMode(groupId, mode) {
 }
 
 // ═══════════════════════════════════════════════
-//  LEADERBOARD
+//  LEADERBOARD & STATS
 // ═══════════════════════════════════════════════
 
 function getLeaderboard(limit = 10) {
@@ -275,10 +291,6 @@ function getLeaderboard(limit = 10) {
     .sort((a, b) => b.points - a.points)
     .slice(0, limit);
 }
-
-// ═══════════════════════════════════════════════
-//  STATS
-// ═══════════════════════════════════════════════
 
 function getGroupStats(groupId) {
   const tasks = getAllTasksForGroup(groupId);
@@ -299,6 +311,7 @@ function getGroupStats(groupId) {
 
 module.exports = {
   store,
+  setAdminContext, getAdminContext, clearAdminContext,
   addGroup, removeGroup, getGroup, getAllGroups, isGroupRegistered,
   setGroupTopic, setGroupMeta, getGroupsForAdmin,
   getOrCreateUser, getUser, getAllUsers, banUser, unbanUser, addPoints,

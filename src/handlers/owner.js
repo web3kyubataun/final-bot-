@@ -1,32 +1,28 @@
 const store = require('../store');
 const sheets = require('../services/sheets');
-const { ownerOnly } = require('../middleware/auth');
+const { ownerOnly, isOwner } = require('../middleware/auth');
+const config = require('../config');
 
 const delay = ms => new Promise(r => setTimeout(r, ms));
 
-// ── /addgroup  ─────────────────────────────────────────
-// Can be used two ways:
-//   1. Run directly INSIDE the group → uses chat ID automatically
-//   2. Run in DM with a group ID → /addgroup -1001234567
+// ── /addgroup ──────────────────────────────────────────
+// Run inside the group  OR  /addgroup -1001234567 [GroupName]  from DM
 async function handleAddGroup(ctx) {
+  const chatType = ctx.chat?.type;
   let groupId, groupName;
 
-  const chatType = ctx.chat?.type;
-
   if (chatType === 'group' || chatType === 'supergroup') {
-    // Command run inside the group itself
-    groupId = String(ctx.chat.id);
+    groupId  = String(ctx.chat.id);
     groupName = ctx.chat.title;
   } else {
-    // Command run in DM — group ID must be provided
     const args = ctx.message.text.split(' ').slice(1);
-    groupId = args[0];
-    groupName = args.slice(1).join(' ') || `Group_${groupId}`;
+    groupId   = args[0];
+    groupName = args.slice(1).join(' ') || null;
     if (!groupId) {
       return ctx.replyWithHTML(
         `<b>Usage:</b>\n` +
-        `• Run <code>/addgroup</code> directly inside your group, OR\n` +
-        `• In DM: <code>/addgroup -1001234567890 GroupName</code>`
+        `• Run <code>/addgroup</code> directly <b>inside the group</b>, OR\n` +
+        `• From DM: <code>/addgroup -1001234567890 GroupName</code>`
       );
     }
   }
@@ -35,14 +31,23 @@ async function handleAddGroup(ctx) {
     return ctx.replyWithHTML(`⚠️ Group <code>${groupId}</code> is already registered.`);
   }
 
-  await ctx.reply('⏳ Setting up group and creating Google Sheet...');
+  await ctx.reply('⏳ Registering group and creating Google Sheet...');
 
   let sheetId = 'none';
+  let sheetNote = '';
   try {
     sheetId = await sheets.createGroupSheet(groupName || `Group_${groupId}`);
+    sheetNote = `📊 Sheet: <code>${sheetId}</code>`;
   } catch (e) {
     console.error('Sheet creation error:', e.message);
-    await ctx.reply(`⚠️ Google Sheet creation failed: ${e.message}\nGroup registered without a sheet.`);
+    sheetNote =
+      `⚠️ <b>Sheet creation failed:</b> ${e.message}\n\n` +
+      `<b>How to fix:</b>\n` +
+      `1. Go to <a href="https://console.cloud.google.com">Google Cloud Console</a>\n` +
+      `2. Select your project → <b>APIs & Services</b>\n` +
+      `3. Enable both <b>Google Sheets API</b> and <b>Google Drive API</b>\n` +
+      `4. Then run /addgroup again\n\n` +
+      `<i>Group registered without a sheet for now.</i>`;
   }
 
   const group = store.addGroup(groupId, sheetId, ctx.from.id);
@@ -50,19 +55,19 @@ async function handleAddGroup(ctx) {
 
   await ctx.replyWithHTML(
     `✅ <b>Group Registered!</b>\n\n` +
-    `🆔 Group ID: <code>${groupId}</code>\n` +
+    `🆔 ID: <code>${groupId}</code>\n` +
     `📛 Name: ${groupName || 'Unknown'}\n` +
-    `📊 Sheet: ${sheetId === 'none' ? 'None (set GOOGLE_SERVICE_ACCOUNT_JSON)' : `<code>${sheetId}</code>`}\n\n` +
-    `Next steps:\n` +
-    `• Add admins: <code>/addadmin ${groupId} &lt;userId&gt;</code>\n` +
-    `• Run <code>/setup</code> in the group for forum topics`
+    `${sheetNote}\n\n` +
+    `<b>Next steps:</b>\n` +
+    `• Add admins: run <code>/addadmin &lt;userId&gt;</code> in the group\n` +
+    `• Run <code>/setup</code> in the group for full setup guide`
   );
 }
 
-// ── /removegroup ────────────────────────────────────────
+// ── /removegroup ─────────────────────────────────────────
 async function handleRemoveGroup(ctx) {
-  let groupId;
   const chatType = ctx.chat?.type;
+  let groupId;
 
   if (chatType === 'group' || chatType === 'supergroup') {
     groupId = String(ctx.chat.id);
@@ -76,18 +81,30 @@ async function handleRemoveGroup(ctx) {
     return ctx.replyWithHTML(`⚠️ Group <code>${groupId}</code> is not registered.`);
   }
 
-  const group = store.getGroup(groupId);
-  const name = group.groupName || groupId;
+  const g = store.getGroup(groupId);
   store.removeGroup(groupId);
-
   await ctx.replyWithHTML(
     `✅ <b>Group Removed</b>\n\n` +
-    `📋 <b>${name}</b> (<code>${groupId}</code>) has been unregistered.\n` +
-    `All tasks and data for this group are cleared.`
+    `<b>${g.groupName || groupId}</b> (<code>${groupId}</code>) has been unregistered.`
   );
 }
 
-// ── /broadcast ─────────────────────────────────────────
+// ── /listgroups ───────────────────────────────────────────
+async function handleListGroups(ctx) {
+  const groups = store.getAllGroups();
+  if (!groups.length) return ctx.reply('No groups registered yet.');
+
+  const lines = groups.map((g, i) =>
+    `${i + 1}. <b>${g.groupName || 'Unknown'}</b>\n` +
+    `   🆔 <code>${g.id}</code>\n` +
+    `   🔐 Mode: ${g.accessMode}  |  👥 Admins: ${g.admins?.size || 0}\n` +
+    `   📊 Sheet: ${g.sheetId !== 'none' ? '✅' : '❌'}`
+  ).join('\n\n');
+
+  await ctx.replyWithHTML(`📋 <b>Registered Groups (${groups.length})</b>\n\n${lines}`);
+}
+
+// ── /broadcast ────────────────────────────────────────────
 async function handleBroadcast(ctx) {
   const text = ctx.message.text.split(' ').slice(1).join(' ');
   if (!text) return ctx.reply('Usage: /broadcast <message>');
@@ -103,46 +120,35 @@ async function handleBroadcast(ctx) {
     } catch { failed++; }
     await delay(50);
   }
-  await ctx.reply(`✅ Done! Sent: ${sent} | Failed: ${failed}`);
+  await ctx.reply(`✅ Done!  Sent: ${sent}  |  Failed: ${failed}`);
 }
 
-// ── /listgroups ─────────────────────────────────────────
-async function handleListGroups(ctx) {
-  const groups = store.getAllGroups();
-  if (!groups.length) return ctx.reply('No groups registered yet.');
-
-  const lines = groups.map((g, i) =>
-    `${i + 1}. <b>${g.groupName || 'Unknown'}</b>\n` +
-    `   ID: <code>${g.id}</code>\n` +
-    `   Mode: ${g.accessMode}  •  Admins: ${g.admins?.size || 0}`
-  ).join('\n\n');
-
-  await ctx.replyWithHTML(`📋 <b>Registered Groups (${groups.length})</b>\n\n${lines}`);
-}
-
-// ── /ownerhelp ─────────────────────────────────────────
+// ── /ownerhelp ────────────────────────────────────────────
 async function handleOwnerHelp(ctx) {
+  const ownerList = config.OWNER_IDS.join(', ') || 'none';
   await ctx.replyWithHTML(
     `👑 <b>Owner Commands</b>\n` +
     `${'─'.repeat(30)}\n\n` +
+    `<b>Current Owners:</b> <code>${ownerList}</code>\n` +
+    `<i>Set BOT_OWNER_IDS=id1,id2 in .env for multiple owners</i>\n\n` +
     `<b>Group Management</b>\n` +
-    `/addgroup — Register a group (run in group or DM)\n` +
-    `/removegroup — Remove a group\n` +
+    `/addgroup — Whitelist a group (run inside OR DM with ID)\n` +
+    `/removegroup — Unregister a group\n` +
     `/listgroups — List all registered groups\n\n` +
     `<b>Broadcasting</b>\n` +
     `/broadcast &lt;message&gt; — DM all bot users\n\n` +
-    `<b>Admin Setup</b>\n` +
-    `/addadmin &lt;groupId&gt; &lt;userId&gt; — Add group admin\n` +
-    `/removeadmin &lt;groupId&gt; &lt;userId&gt; — Remove admin`
+    `<b>Difference: Owners vs Admins</b>\n` +
+    `👑 <b>Owners</b>: Can whitelist/addgroup/removegroup. Set in .env.\n` +
+    `🛠 <b>Admins</b>: Can manage tasks/raids/submissions for their group. Added via /addadmin.`
   );
 }
 
 function register(bot) {
-  bot.command('addgroup', ownerOnly, handleAddGroup);
+  bot.command('addgroup',    ownerOnly, handleAddGroup);
   bot.command('removegroup', ownerOnly, handleRemoveGroup);
-  bot.command('broadcast', ownerOnly, handleBroadcast);
-  bot.command('listgroups', ownerOnly, handleListGroups);
-  bot.command('ownerhelp', ownerOnly, handleOwnerHelp);
+  bot.command('listgroups',  ownerOnly, handleListGroups);
+  bot.command('broadcast',   ownerOnly, handleBroadcast);
+  bot.command('ownerhelp',   ownerOnly, handleOwnerHelp);
 }
 
 module.exports = { register };
