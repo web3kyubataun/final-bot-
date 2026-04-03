@@ -1,36 +1,31 @@
 require('dotenv').config();
-const { Telegraf } = require('telegraf');
-const { initDatabase } = require('./src/database');
-const { registerHandlers } = require('./src/bot');
+const { createBot } = require('./src/bot');
 const { startScheduler } = require('./src/scheduler');
 
 async function main() {
-  if (!process.env.BOT_TOKEN) {
-    throw new Error('BOT_TOKEN is not set in environment variables.');
+  const bot = await createBot();
+  if (!bot) process.exit(1);
+
+  // ── 409 Conflict fix ──────────────────────────────────────────────────────
+  // Clears any lingering webhook before starting polling.
+  // This prevents "409: Conflict: terminated by other getUpdates request"
+  // when a previous Railway deployment is still trying to poll.
+  try {
+    await bot.telegram.deleteWebhook({ drop_pending_updates: false });
+    console.log('[Bot] Webhook cleared — starting polling.');
+  } catch (err) {
+    console.warn('[Bot] Could not clear webhook (may be fine):', err.message);
   }
 
-  console.log('[Bot] Starting Telegram Raid Bot...');
+  bot.launch();
 
-  initDatabase();
-  console.log('[Bot] Database initialized');
+  startScheduler(bot);
 
-  const bot = new Telegraf(process.env.BOT_TOKEN);
-
-  registerHandlers(bot);
-  startScheduler(bot.telegram);
-
-  bot.catch((err, ctx) => {
-    console.error('[Bot] Error:', err.message, '| Update:', ctx?.updateType);
-  });
-
-  await bot.launch();
-  console.log('[Bot] Bot is running');
-
-  process.once('SIGINT', () => bot.stop('SIGINT'));
+  process.once('SIGINT',  () => bot.stop('SIGINT'));
   process.once('SIGTERM', () => bot.stop('SIGTERM'));
 }
 
-main().catch((err) => {
-  console.error('[Bot] Fatal error:', err);
+main().catch(err => {
+  console.error('❌ Fatal error:', err);
   process.exit(1);
 });
