@@ -1,3 +1,14 @@
+// ─────────────────────────────────────────────────────────────────────────────
+//  taskHandler.js  —  Task verification flows
+//
+//  Rules:
+//  - All task interaction happens in DM only
+//  - Group "Submit Tasks" button deep-links to bot DM
+//  - Twitter: auto-verified via API
+//  - Telegram join: verified via getChatMember
+//  - Telegram react/send: user self-reports (mark as done)
+// ─────────────────────────────────────────────────────────────────────────────
+
 const db = require('../database');
 const tw = require('../twitter');
 const {
@@ -12,10 +23,18 @@ const {
 const { raidTaskKeyboard, taskActionKeyboard, telegramTaskActionKeyboard } = require('../utils/keyboards');
 
 // ─────────────────────────────────────────────
-//  Entry: user taps a task button
+//  Entry: user taps a task button (must be in DM)
 // ─────────────────────────────────────────────
 async function handleTaskVerify(ctx, taskId) {
   const userId = ctx.from.id;
+  const chatId = ctx.chat?.id;
+
+  // Enforce DM-only
+  if (String(chatId) !== String(userId)) {
+    await ctx.answerCbQuery('Please complete tasks in your bot DM.');
+    return;
+  }
+
   const user = db.upsertUser(userId, ctx.from.username, ctx.from.first_name);
   const task = db.getDb().prepare('SELECT * FROM tasks WHERE id = ?').get(taskId);
 
@@ -36,11 +55,9 @@ async function handleTaskVerify(ctx, taskId) {
 
   // Twitter task — require Twitter username first
   if (!user.twitter_username) {
-    const chatId = ctx.chat?.id;
     db.setAdminSession(userId, 'waiting_twitter_username', {
       pending_task_id: task.id,
       pending_raid_id: raid.id,
-      pending_chat_id: chatId ? String(chatId) : null,
     });
     await ctx.telegram.sendMessage(
       userId,
@@ -56,23 +73,21 @@ async function handleTaskVerify(ctx, taskId) {
     return;
   }
 
-  const chatId = ctx.chat?.id;
-  await initiateTwitterVerification(ctx.telegram, userId, user, task, raid, chatId ? String(chatId) : null);
+  await initiateTwitterVerification(ctx.telegram, userId, user, task, raid);
 }
 
 // ─────────────────────────────────────────────
 //  Twitter Task Verification
 // ─────────────────────────────────────────────
-async function initiateTwitterVerification(telegram, dmChatId, user, task, raid, groupChatId) {
+async function initiateTwitterVerification(telegram, dmChatId, user, task, raid) {
   const taskIndex = getTaskIndex(task, raid.id);
   const instruction = formatTaskInstruction(task, taskIndex);
 
   if (task.type === 'comment' || task.type === 'quote') {
-    // For comment/quote: show instructions with link button, then wait for link input
+    // Set session to wait for tweet link submission
     db.setAdminSession(dmChatId, task.type === 'quote' ? 'waiting_quote_link' : 'waiting_comment_link', {
       task_id: task.id,
       raid_id: raid.id,
-      group_chat_id: groupChatId,
       min_chars: task.min_chars || 20,
     });
 
@@ -85,7 +100,7 @@ async function initiateTwitterVerification(telegram, dmChatId, user, task, raid,
     return;
   }
 
-  // For follow / like / retweet: show instructions with open link + verify button
+  // follow / like / retweet — show instructions + verify button
   const keyboard = taskActionKeyboard(task, taskIndex);
   await telegram.sendMessage(
     dmChatId,
@@ -95,18 +110,12 @@ async function initiateTwitterVerification(telegram, dmChatId, user, task, raid,
 }
 
 // ─────────────────────────────────────────────
-//  Auto-verify Twitter tasks (follow / like / retweet)
+//  Auto-verify via Twitter API
 // ─────────────────────────────────────────────
-async function verifyTwitterTaskNow(telegram, dmChatId, user, task, raid, groupChatId) {
-  const taskLabel = formatTaskLabel(task);
+async function verifyTwitterTaskNow(telegram, dmChatId, user, task, raid) {
+  await telegram.sendMessage(dmChatId, `_Verifying via Twitter API\\.\\.\\._`, { parse_mode: 'MarkdownV2' });
+
   let result;
-
-  await telegram.sendMessage(
-    dmChatId,
-    `_Verifying via Twitter API\\.\\.\\._`,
-    { parse_mode: 'MarkdownV2' }
-  );
-
   try {
     switch (task.type) {
       case 'follow':
@@ -130,14 +139,20 @@ async function verifyTwitterTaskNow(telegram, dmChatId, user, task, raid, groupC
     result = { success: false, reason: 'Twitter API error\\. Please try again in a moment\\.' };
   }
 
-  await deliverVerificationResult(telegram, dmChatId, user, task, raid, groupChatId, result);
+  await deliverVerificationResult(telegram, dmChatId, user, task, raid, result);
 }
 
 // ─────────────────────────────────────────────
-//  Called when user taps "Verify" button (follow/like/retweet)
+//  Verify button (follow / like / retweet)
 // ─────────────────────────────────────────────
 async function handleVerifyButton(ctx, taskId) {
   const userId = ctx.from.id;
+
+  // Enforce DM-only
+  if (String(ctx.chat?.id) !== String(userId)) {
+    return ctx.answerCbQuery('Please use this in your bot DM.');
+  }
+
   const user = db.upsertUser(userId, ctx.from.username, ctx.from.first_name);
   const task = db.getDb().prepare('SELECT * FROM tasks WHERE id = ?').get(taskId);
 
@@ -148,15 +163,14 @@ async function handleVerifyButton(ctx, taskId) {
   const existing = db.getUserTaskSubmission(user.id, taskId);
   if (existing && existing.status === 'verified') return ctx.answerCbQuery('Already verified.');
 
-  if (!user.twitter_username) return ctx.answerCbQuery('Link your Twitter first.');
+  if (!user.twitter_username) return ctx.answerCbQuery('Link your Twitter account first.');
 
-  await ctx.answerCbQuery('Verifying...');
-  const chatId = ctx.chat?.id;
-  await verifyTwitterTaskNow(ctx.telegram, userId, user, task, raid, chatId ? String(chatId) : null);
+  await ctx.answerCbQuery('Verifying…');
+  await verifyTwitterTaskNow(ctx.telegram, userId, user, task, raid);
 }
 
 // ─────────────────────────────────────────────
-//  Quote / Comment link submission
+//  Quote / Comment link submission (DM text input)
 // ─────────────────────────────────────────────
 async function handleQuoteOrCommentLink(ctx, session) {
   const userId = ctx.from.id;
@@ -179,8 +193,8 @@ async function handleQuoteOrCommentLink(ctx, session) {
     return;
   }
 
+  // Anti-spam: minimum characters check (done inside tw.verifyComment / tw.verifyQuoteTweet)
   db.clearAdminSession(userId);
-
   await ctx.reply('_Verifying your submission\\.\\.\\._', { parse_mode: 'MarkdownV2' });
 
   let result;
@@ -198,7 +212,7 @@ async function handleQuoteOrCommentLink(ctx, session) {
     result = { success: false, reason: 'Twitter API error\\. Please try again\\.' };
   }
 
-  await deliverVerificationResult(ctx.telegram, userId, user, task, raid, data.group_chat_id, result);
+  await deliverVerificationResult(ctx.telegram, userId, user, task, raid, result);
 }
 
 // ─────────────────────────────────────────────
@@ -223,7 +237,7 @@ async function handleTwitterUsernameInput(ctx) {
   if (conflict) {
     await ctx.reply(
       `*Username Already Registered*\n\n` +
-      `_The Twitter username_ \`@${escapeMarkdown(clean)}\` _is already linked to another account\\._\n\n` +
+      `_The Twitter username_ \`@${escapeMarkdown(clean)}\` _is already linked to another Telegram account\\._\n\n` +
       `_If this is your account, contact an admin\\._`,
       { parse_mode: 'MarkdownV2' }
     );
@@ -233,12 +247,12 @@ async function handleTwitterUsernameInput(ctx) {
   db.setUserTwitterUsername(userId, clean);
 
   await ctx.reply(
-    `*Twitter Linked*\n\n_Account set to_ \`@${escapeMarkdown(clean)}\`\n\n_Now verifying your task\\.\\.\\._`,
+    `✅ *Twitter Linked*\n\n_Account set to_ \`@${escapeMarkdown(clean)}\`\n\n_Now verifying your task\\.\\.\\._`,
     { parse_mode: 'MarkdownV2' }
   );
 
   const session = db.getAdminSession(userId);
-  const { pending_task_id, pending_raid_id, pending_chat_id } = session?.data || {};
+  const { pending_task_id, pending_raid_id } = session?.data || {};
   db.clearAdminSession(userId);
 
   if (pending_task_id && pending_raid_id) {
@@ -248,7 +262,7 @@ async function handleTwitterUsernameInput(ctx) {
     user.twitter_username = clean;
 
     if (task && raid) {
-      await initiateTwitterVerification(ctx.telegram, userId, user, task, raid, pending_chat_id);
+      await initiateTwitterVerification(ctx.telegram, userId, user, task, raid);
     }
   }
 }
@@ -270,10 +284,16 @@ async function handleTelegramTaskPrompt(ctx, user, task, raid) {
 }
 
 // ─────────────────────────────────────────────
-//  Telegram "Done" button
+//  Telegram Join Verification (getChatMember)
 // ─────────────────────────────────────────────
-async function handleTelegramTaskDone(ctx, taskId) {
+async function handleTelegramJoinVerify(ctx, taskId) {
   const userId = ctx.from.id;
+
+  // DM-only check
+  if (String(ctx.chat?.id) !== String(userId)) {
+    return ctx.answerCbQuery('Please use this in your bot DM.');
+  }
+
   const user = db.upsertUser(userId, ctx.from.username, ctx.from.first_name);
   const task = db.getDb().prepare('SELECT * FROM tasks WHERE id = ?').get(taskId);
   if (!task) return ctx.answerCbQuery('Task not found.');
@@ -281,16 +301,70 @@ async function handleTelegramTaskDone(ctx, taskId) {
   const raid = db.getRaid(task.raid_id);
   if (!raid) return ctx.answerCbQuery('Raid not found.');
 
-  await ctx.answerCbQuery();
+  const existing = db.getUserTaskSubmission(user.id, taskId);
+  if (existing && existing.status === 'verified') {
+    return ctx.answerCbQuery('Already verified.');
+  }
 
-  const group = db.getDb().prepare('SELECT * FROM groups WHERE id = ?').get(raid.group_id);
-  await deliverVerificationResult(ctx.telegram, userId, user, task, raid, group?.telegram_id, { success: true });
+  await ctx.answerCbQuery('Checking membership…');
+
+  let result = { success: false, reason: 'Could not verify membership.' };
+
+  if (task.target_username) {
+    try {
+      // target_username stores the channel @username (without @)
+      const channelId = `@${task.target_username}`;
+      const member = await ctx.telegram.getChatMember(channelId, userId);
+      const validStatuses = ['creator', 'administrator', 'member', 'restricted'];
+
+      if (validStatuses.includes(member.status)) {
+        result = { success: true };
+      } else {
+        result = { success: false, reason: `You have not joined @${escapeMarkdown(task.target_username)}\\. Join first, then tap Verify again\\.` };
+      }
+    } catch (err) {
+      console.error('[TaskHandler] getChatMember error:', err.message);
+      // If bot can't check (not in channel), fall back to self-report
+      result = { success: true };
+    }
+  } else {
+    // No target configured — accept on trust
+    result = { success: true };
+  }
+
+  await deliverVerificationResult(ctx.telegram, userId, user, task, raid, result);
+}
+
+// ─────────────────────────────────────────────
+//  Telegram "Mark as Done" button (react / send)
+// ─────────────────────────────────────────────
+async function handleTelegramTaskDone(ctx, taskId) {
+  const userId = ctx.from.id;
+
+  if (String(ctx.chat?.id) !== String(userId)) {
+    return ctx.answerCbQuery('Please use this in your bot DM.');
+  }
+
+  const user = db.upsertUser(userId, ctx.from.username, ctx.from.first_name);
+  const task = db.getDb().prepare('SELECT * FROM tasks WHERE id = ?').get(taskId);
+  if (!task) return ctx.answerCbQuery('Task not found.');
+
+  const raid = db.getRaid(task.raid_id);
+  if (!raid) return ctx.answerCbQuery('Raid not found.');
+
+  const existing = db.getUserTaskSubmission(user.id, taskId);
+  if (existing && existing.status === 'verified') {
+    return ctx.answerCbQuery('Already completed.');
+  }
+
+  await ctx.answerCbQuery();
+  await deliverVerificationResult(ctx.telegram, userId, user, task, raid, { success: true });
 }
 
 // ─────────────────────────────────────────────
 //  Deliver Result & Progress
 // ─────────────────────────────────────────────
-async function deliverVerificationResult(telegram, dmChatId, user, task, raid, groupChatId, result) {
+async function deliverVerificationResult(telegram, dmChatId, user, task, raid, result) {
   const taskLabel = formatTaskLabel(task);
 
   if (!result.success) {
@@ -311,7 +385,7 @@ async function deliverVerificationResult(telegram, dmChatId, user, task, raid, g
     { parse_mode: 'MarkdownV2' }
   );
 
-  // Check if all done
+  // Check if all tasks done
   const allDone = db.checkRaidCompletion(user.id, raid.id);
 
   if (allDone) {
@@ -324,20 +398,26 @@ async function deliverVerificationResult(telegram, dmChatId, user, task, raid, g
         { parse_mode: 'MarkdownV2' }
       );
 
-      // Sync to Google Sheets if available
+      // Sync to Google Sheets
       try {
         const sheetsSync = require('../utils/sheetsSync');
         await sheetsSync.syncUserData(user, raid, raid.reward);
       } catch (_) {}
 
-      if (groupChatId) {
-        const name = user.username ? `@${user.username}` : (user.first_name || 'A user');
-        await telegram.sendMessage(
-          groupChatId,
-          `*Raid Completed*\n\n_${escapeMarkdown(name)} completed_ *${escapeMarkdown(raid.title)}* _and earned_ *${raid.reward} points*\\.`,
-          { parse_mode: 'MarkdownV2' }
-        ).catch(() => {});
-      }
+      // Post completion notice to group
+      try {
+        const group = db.getDb().prepare('SELECT * FROM groups WHERE id = ?').get(raid.group_id);
+        if (group?.telegram_id) {
+          const name = user.username ? `@${user.username}` : (user.first_name || 'A user');
+          const opts = { parse_mode: 'MarkdownV2' };
+          if (group.leaderboard_topic_id) opts.message_thread_id = group.leaderboard_topic_id;
+          await telegram.sendMessage(
+            group.telegram_id,
+            `🎉 *Raid Completed*\n\n_${escapeMarkdown(name)} completed_ *${escapeMarkdown(raid.title)}* _and earned_ *${raid.reward} pts*\\.`,
+            opts
+          ).catch(() => {});
+        }
+      } catch (_) {}
     } else {
       await telegram.sendMessage(
         dmChatId,
@@ -357,7 +437,7 @@ async function deliverVerificationResult(telegram, dmChatId, user, task, raid, g
   if (remaining.length > 0) {
     await telegram.sendMessage(
       dmChatId,
-      `*Progress*\n\n_${remaining.length} task(s) remaining to complete this raid\\._`,
+      `*Progress*\n\n_${remaining.length} task\\(s\\) remaining to complete this raid\\._`,
       { parse_mode: 'MarkdownV2', reply_markup: raidTaskKeyboard(allTasks, doneIds) }
     );
   }
@@ -375,6 +455,7 @@ module.exports = {
   handleTaskVerify,
   handleVerifyButton,
   handleTelegramTaskDone,
+  handleTelegramJoinVerify,
   handleQuoteOrCommentLink,
   handleTwitterUsernameInput,
 };

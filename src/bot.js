@@ -1,3 +1,7 @@
+// ─────────────────────────────────────────────────────────────────────────────
+//  bot.js  —  Handler registration
+// ─────────────────────────────────────────────────────────────────────────────
+
 const db = require('./database');
 const { checkAntiSpam } = require('./handlers/antiSpam');
 const { handleStart, handleSetTwitter, handleMyPoints } = require('./commands/start');
@@ -18,17 +22,20 @@ const {
   handleTaskConfirm,
   handleSkipDescription,
   handleRaidGroupSelect,
+  handlePlatformSelect,         // ← NEW
 } = require('./handlers/adminHandler');
 const {
   handleTaskVerify,
   handleVerifyButton,
   handleTelegramTaskDone,
+  handleTelegramJoinVerify,     // ← NEW
   handleQuoteOrCommentLink,
   handleTwitterUsernameInput,
 } = require('./handlers/taskHandler');
 
 function registerHandlers(bot) {
-  // ── Register group on bot join ──
+
+  // ── Register group on bot join ──────────────────────────────────────────────
   bot.on('my_chat_member', async (ctx) => {
     const chat = ctx.chat;
     if (chat && (chat.type === 'group' || chat.type === 'supergroup')) {
@@ -37,7 +44,23 @@ function registerHandlers(bot) {
     }
   });
 
-  // ── Message Handler ──
+  // ── /start — handle deep links (raid_RAIDID) ────────────────────────────────
+  bot.command('start', async (ctx) => {
+    const payload = ctx.message?.text?.split(' ')[1] || '';
+
+    // Deep link: /start raid_123
+    if (payload.startsWith('raid_')) {
+      const raidId = parseInt(payload.replace('raid_', ''), 10);
+      if (!isNaN(raidId)) {
+        await handleRaidSubmit(ctx, raidId).catch(console.error);
+        return;
+      }
+    }
+
+    await handleStart(ctx).catch(console.error);
+  });
+
+  // ── Message handler ─────────────────────────────────────────────────────────
   bot.on('message', async (ctx) => {
     if (!ctx.from || ctx.from.is_bot) return;
 
@@ -53,17 +76,17 @@ function registerHandlers(bot) {
     if (ctx.chat.type === 'private') {
       const session = db.getAdminSession(ctx.from.id);
       if (session) {
-        // User flow: twitter username
+        // User: twitter username
         if (session.state === 'waiting_twitter_username') {
           await handleTwitterUsernameInput(ctx).catch(console.error);
           return;
         }
-        // User flow: quote/comment link submission
+        // User: quote/comment link submission
         if (session.state === 'waiting_quote_link' || session.state === 'waiting_comment_link') {
           await handleQuoteOrCommentLink(ctx, session).catch(console.error);
           return;
         }
-        // Admin text input flows
+        // Admin text inputs
         if (isAdmin(ctx.from.id)) {
           const handled = await handleAdminTextInput(ctx).catch(console.error);
           if (handled) return;
@@ -76,12 +99,12 @@ function registerHandlers(bot) {
     await checkAntiSpam(ctx).catch(console.error);
   });
 
-  // ── Commands ──
-  bot.command('start', (ctx) => handleStart(ctx).catch(console.error));
+  // ── Commands ────────────────────────────────────────────────────────────────
+  // /start is handled above (supports deep links)
   bot.command('leaderboard', (ctx) => handleLeaderboardCommand(ctx).catch(console.error));
-  bot.command('raids', (ctx) => handleRaidsCommand(ctx).catch(console.error));
-  bot.command('mypoints', (ctx) => handleMyPoints(ctx).catch(console.error));
-  bot.command('settwitter', (ctx) => handleSetTwitter(ctx).catch(console.error));
+  bot.command('raids',       (ctx) => handleRaidsCommand(ctx).catch(console.error));
+  bot.command('mypoints',    (ctx) => handleMyPoints(ctx).catch(console.error));
+  bot.command('settwitter',  (ctx) => handleSetTwitter(ctx).catch(console.error));
 
   bot.command('admin', async (ctx) => {
     if (!isAdmin(ctx.from.id)) return;
@@ -101,30 +124,38 @@ function registerHandlers(bot) {
     ).catch(console.error);
   });
 
-  // ── Callback Query Router ──
+  // ── Callback Query Router ───────────────────────────────────────────────────
   bot.on('callback_query', async (ctx) => {
     const data = ctx.callbackQuery?.data;
     if (!data) return;
 
     try {
-      // Ignore no-op buttons (already-done tasks)
+      // No-op (already-done tasks)
       if (data === 'noop') return ctx.answerCbQuery();
 
-      // Admin panel
-      if (data === 'admin:create_raid') return await handleCallbackCreateRaid(ctx);
-      if (data === 'admin:active_raids') return await handleCallbackActiveRaids(ctx);
+      // ── Admin panel ──
+      if (data === 'admin:create_raid')   return await handleCallbackCreateRaid(ctx);
+      if (data === 'admin:active_raids')  return await handleCallbackActiveRaids(ctx);
+      if (data === 'admin:settings')      return await handleCallbackSettings(ctx);
       if (data === 'admin:leaderboard') {
         await ctx.answerCbQuery();
         return await handleLeaderboardCommand(ctx, true);
       }
-      if (data === 'admin:settings') return await handleCallbackSettings(ctx);
-      if (data === 'settings:min_chars') return await handleCallbackSettingsMinChars(ctx);
-      if (data === 'settings:lb_topic') return await handleCallbackSettingsLbTopic(ctx);
+
+      // Settings
+      if (data === 'settings:min_chars')  return await handleCallbackSettingsMinChars(ctx);
+      if (data === 'settings:lb_topic')   return await handleCallbackSettingsLbTopic(ctx);
       if (data === 'settings:close_raid') return await handleCallbackCloseRaid(ctx);
 
       // Create raid flow
       if (data === 'create_raid:skip_description') return await handleSkipDescription(ctx);
-      if (data === 'task_confirm') return await handleTaskConfirm(ctx);
+      if (data === 'task_confirm')                 return await handleTaskConfirm(ctx);
+
+      // ── Platform select  (NEW) ──
+      if (data.startsWith('admin:platform:')) {
+        const platform = data.split(':')[2]; // 'twitter' or 'telegram'
+        return await handlePlatformSelect(ctx, platform);
+      }
 
       // Task type toggles
       if (data.startsWith('task_toggle:')) {
@@ -133,33 +164,51 @@ function registerHandlers(bot) {
       }
 
       // Group selector (raid creation)
-      if (data.startsWith('admin:raid_group:')) return await handleRaidGroupSelect(ctx, data.split(':')[2]);
+      if (data.startsWith('admin:raid_group:')) {
+        return await handleRaidGroupSelect(ctx, data.split(':')[2]);
+      }
 
-      // Raid submission
-      if (data.startsWith('raid:submit:')) return await handleRaidSubmit(ctx, data.split(':')[2]);
+      // ── Raid submission ──
+      // Handled via deep link (/start raid_ID) from group message button.
+      // Fallback inline callback still supported.
+      if (data.startsWith('raid:submit:')) {
+        return await handleRaidSubmit(ctx, data.split(':')[2]);
+      }
 
-      // Task verification — opening task (for comment/quote) or re-tap
+      // ── Task verification ──
       if (data.startsWith('task:verify:')) {
         const taskId = parseInt(data.split(':')[2], 10);
         return await handleTaskVerify(ctx, taskId);
       }
 
-      // Verify button (follow / like / retweet) — after user taps "Verify" button
+      // Verify button (follow / like / retweet)
       if (data.startsWith('task:confirm_verify:')) {
         const taskId = parseInt(data.split(':')[2], 10);
         return await handleVerifyButton(ctx, taskId);
       }
 
-      // Telegram task done
+      // Telegram join verify (getChatMember)  ← NEW
+      if (data.startsWith('task:tg_verify:')) {
+        return await handleTelegramJoinVerify(ctx, parseInt(data.split(':')[2], 10));
+      }
+
+      // Telegram mark-as-done (react / send)
       if (data.startsWith('task:tg_done:')) {
         return await handleTelegramTaskDone(ctx, parseInt(data.split(':')[2], 10));
       }
 
-      // Leaderboard group selector
-      if (data.startsWith('lb:group:')) return await handleLeaderboardGroupSelect(ctx, data.split(':')[2]);
+      // ── Leaderboard group selector ──
+      if (data.startsWith('lb:group:')) {
+        return await handleLeaderboardGroupSelect(ctx, data.split(':')[2]);
+      }
 
-      // Close raid
-      if (data.startsWith('close_raid:')) return await handleConfirmCloseRaid(ctx, parseInt(data.split(':')[1], 10));
+      // ── Close raid ──
+      if (data.startsWith('close_raid:')) {
+        return await handleConfirmCloseRaid(ctx, parseInt(data.split(':')[1], 10));
+      }
+
+      // Unknown
+      ctx.answerCbQuery().catch(() => {});
 
     } catch (err) {
       console.error('[Bot] Callback error:', err.message, '| data:', data);
