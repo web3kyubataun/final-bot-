@@ -76,6 +76,7 @@ async function handleTaskVerify(ctx, taskId) {
   await initiateTwitterVerification(ctx.telegram, userId, user, task, raid);
 }
 
+
 // ─────────────────────────────────────────────
 //  Twitter Task Verification
 // ─────────────────────────────────────────────
@@ -83,8 +84,10 @@ async function initiateTwitterVerification(telegram, dmChatId, user, task, raid)
   const taskIndex = getTaskIndex(task, raid.id);
   const instruction = formatTaskInstruction(task, taskIndex);
 
-  if (task.type === 'comment' || task.type === 'quote') {
-    db.setAdminSession(dmChatId, task.type === 'quote' ? 'waiting_quote_link' : 'waiting_comment_link', {
+  // comment, quote, retweet — URL submission flow (works on Free API tier)
+  const urlSubmitTypes = { comment: 'waiting_comment_link', quote: 'waiting_quote_link', retweet: 'waiting_retweet_link' };
+  if (urlSubmitTypes[task.type]) {
+    db.setAdminSession(dmChatId, urlSubmitTypes[task.type], {
       task_id: task.id,
       raid_id: raid.id,
       min_chars: task.min_chars || 20,
@@ -98,7 +101,7 @@ async function initiateTwitterVerification(telegram, dmChatId, user, task, raid)
     return;
   }
 
-  // follow / like / retweet — show instructions + verify button
+  // follow / like — show instructions + verify button (auto-verified; falls back to trust-based on Free tier)
   const keyboard = taskActionKeyboard(task, taskIndex);
   await telegram.sendMessage(
     dmChatId,
@@ -169,7 +172,7 @@ async function handleVerifyButton(ctx, taskId) {
 }
 
 // ─────────────────────────────────────────────
-//  Quote / Comment link submission (DM text input)
+//  URL link submission: retweet / quote / comment (DM text input)
 // ─────────────────────────────────────────────
 async function handleQuoteOrCommentLink(ctx, session) {
   const userId = ctx.from.id;
@@ -197,13 +200,16 @@ async function handleQuoteOrCommentLink(ctx, session) {
 
   let result;
   const minChars = data.min_chars || task.min_chars || 20;
-  const tweetId = task.tweet_id || tw.extractTweetId(task.task_link) || tw.extractTweetId(raid.link);
+  const originalTweetId = task.tweet_id || tw.extractTweetId(task.task_link) || tw.extractTweetId(raid.link);
 
   try {
     if (state === 'waiting_quote_link') {
-      result = await tw.verifyQuote(link, tweetId, user.twitter_username, minChars);
+      result = await tw.verifyQuote(link, originalTweetId, user.twitter_username, minChars);
+    } else if (state === 'waiting_retweet_link') {
+      result = await tw.verifyRetweetUrl(link, originalTweetId, user.twitter_username);
     } else {
-      result = await tw.verifyReply(link, tweetId, user.twitter_username, minChars);
+      // waiting_comment_link
+      result = await tw.verifyReply(link, originalTweetId, user.twitter_username, minChars);
     }
   } catch (err) {
     console.error('[TaskHandler] Verify error:', err.message);
