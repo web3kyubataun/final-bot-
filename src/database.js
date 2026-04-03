@@ -8,9 +8,7 @@ let db;
 
 function initDatabase() {
   const dir = path.dirname(DB_PATH);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
   db = new Database(DB_PATH);
   db.pragma('journal_mode = WAL');
@@ -22,7 +20,7 @@ function initDatabase() {
       telegram_id TEXT UNIQUE NOT NULL,
       name TEXT,
       leaderboard_topic_id INTEGER,
-      min_char_limit INTEGER DEFAULT 10,
+      min_char_limit INTEGER DEFAULT 20,
       created_at INTEGER DEFAULT (unixepoch())
     );
 
@@ -32,7 +30,8 @@ function initDatabase() {
       username TEXT,
       first_name TEXT,
       twitter_username TEXT,
-      created_at INTEGER DEFAULT (unixepoch())
+      created_at INTEGER DEFAULT (unixepoch()),
+      last_active INTEGER DEFAULT (unixepoch())
     );
 
     CREATE TABLE IF NOT EXISTS user_groups (
@@ -48,6 +47,7 @@ function initDatabase() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       group_id INTEGER NOT NULL,
       title TEXT NOT NULL,
+      description TEXT,
       link TEXT NOT NULL,
       reward INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'active',
@@ -64,6 +64,8 @@ function initDatabase() {
       details TEXT,
       target_username TEXT,
       tweet_id TEXT,
+      task_link TEXT,
+      min_chars INTEGER DEFAULT 20,
       required_account TEXT,
       created_at INTEGER DEFAULT (unixepoch()),
       FOREIGN KEY (raid_id) REFERENCES raids(id)
@@ -125,6 +127,17 @@ function initDatabase() {
     );
   `);
 
+  // Safe migrations for existing databases
+  const migrations = [
+    `ALTER TABLE raids ADD COLUMN description TEXT`,
+    `ALTER TABLE tasks ADD COLUMN task_link TEXT`,
+    `ALTER TABLE tasks ADD COLUMN min_chars INTEGER DEFAULT 20`,
+    `ALTER TABLE users ADD COLUMN last_active INTEGER DEFAULT (unixepoch())`,
+  ];
+  for (const sql of migrations) {
+    try { db.exec(sql); } catch (_) {}
+  }
+
   return db;
 }
 
@@ -137,11 +150,12 @@ function getDb() {
 function upsertUser(telegramId, username, firstName) {
   const d = getDb();
   d.prepare(`
-    INSERT INTO users (telegram_id, username, first_name)
-    VALUES (?, ?, ?)
+    INSERT INTO users (telegram_id, username, first_name, last_active)
+    VALUES (?, ?, ?, unixepoch())
     ON CONFLICT(telegram_id) DO UPDATE SET
       username = excluded.username,
-      first_name = excluded.first_name
+      first_name = excluded.first_name,
+      last_active = unixepoch()
   `).run(String(telegramId), username || null, firstName || null);
   return d.prepare('SELECT * FROM users WHERE telegram_id = ?').get(String(telegramId));
 }
@@ -151,8 +165,17 @@ function getUserByTelegramId(telegramId) {
 }
 
 function setUserTwitterUsername(telegramId, twitterUsername) {
+  const clean = twitterUsername.replace(/^@/, '').toLowerCase().trim();
   getDb().prepare('UPDATE users SET twitter_username = ? WHERE telegram_id = ?')
-    .run(twitterUsername.replace(/^@/, '').toLowerCase(), String(telegramId));
+    .run(clean, String(telegramId));
+}
+
+function checkTwitterUsernameConflict(twitterUsername, telegramId) {
+  const clean = twitterUsername.replace(/^@/, '').toLowerCase().trim();
+  const existing = getDb().prepare(
+    'SELECT * FROM users WHERE LOWER(twitter_username) = ? AND telegram_id != ?'
+  ).get(clean, String(telegramId));
+  return existing || null;
 }
 
 // --- GROUP ---
@@ -181,9 +204,7 @@ function setGroupMinCharLimit(telegramId, limit) {
 }
 
 function linkUserToGroup(userId, groupId) {
-  getDb().prepare(`
-    INSERT OR IGNORE INTO user_groups (user_id, group_id) VALUES (?, ?)
-  `).run(userId, groupId);
+  getDb().prepare(`INSERT OR IGNORE INTO user_groups (user_id, group_id) VALUES (?, ?)`).run(userId, groupId);
 }
 
 function getUserGroups(telegramUserId) {
@@ -197,10 +218,11 @@ function getUserGroups(telegramUserId) {
 }
 
 // --- RAIDS ---
-function createRaid(groupId, title, link, reward, createdBy) {
+function createRaid(groupId, title, description, link, reward, createdBy) {
   const result = getDb().prepare(`
-    INSERT INTO raids (group_id, title, link, reward, created_by) VALUES (?, ?, ?, ?, ?)
-  `).run(groupId, title, link, reward, String(createdBy));
+    INSERT INTO raids (group_id, title, description, link, reward, created_by)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(groupId, title, description || null, link, reward, String(createdBy));
   return result.lastInsertRowid;
 }
 
@@ -224,11 +246,18 @@ function closeRaid(raidId) {
 }
 
 // --- TASKS ---
-function addTask(raidId, platform, type, details, targetUsername, tweetId, requiredAccount) {
+function addTask(raidId, platform, type, details, targetUsername, tweetId, taskLink, minChars) {
   const result = getDb().prepare(`
-    INSERT INTO tasks (raid_id, platform, type, details, target_username, tweet_id, required_account)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(raidId, platform, type, details || null, targetUsername || null, tweetId || null, requiredAccount || null);
+    INSERT INTO tasks (raid_id, platform, type, details, target_username, tweet_id, task_link, min_chars)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    raidId, platform, type,
+    details || null,
+    targetUsername || null,
+    tweetId || null,
+    taskLink || null,
+    minChars || 20
+  );
   return result.lastInsertRowid;
 }
 
@@ -294,10 +323,17 @@ function awardRaidPoints(userId, raidId, groupId, points) {
   return true;
 }
 
+function getUserCompletedRaidCount(userId) {
+  const result = getDb().prepare(
+    'SELECT COUNT(*) as c FROM raid_submissions WHERE user_id = ? AND points_awarded > 0'
+  ).get(userId);
+  return result?.c || 0;
+}
+
 // --- LEADERBOARD ---
 function getLeaderboard(groupId, limit = 10) {
   return getDb().prepare(`
-    SELECT u.username, u.first_name, up.points
+    SELECT u.username, u.first_name, u.twitter_username, up.points
     FROM user_points up
     INNER JOIN users u ON u.id = up.user_id
     WHERE up.group_id = ?
@@ -321,13 +357,11 @@ function getUserPoints(userId, groupId) {
 
 // --- WARNINGS ---
 function addWarning(userId, groupId, reason) {
-  getDb().prepare('INSERT INTO user_warnings (user_id, group_id, reason) VALUES (?, ?, ?)')
-    .run(userId, groupId, reason || null);
+  getDb().prepare('INSERT INTO user_warnings (user_id, group_id, reason) VALUES (?, ?, ?)').run(userId, groupId, reason || null);
 }
 
 function getWarningCount(userId, groupId) {
-  const result = getDb().prepare('SELECT COUNT(*) as c FROM user_warnings WHERE user_id = ? AND group_id = ?')
-    .get(userId, groupId);
+  const result = getDb().prepare('SELECT COUNT(*) as c FROM user_warnings WHERE user_id = ? AND group_id = ?').get(userId, groupId);
   return result.c;
 }
 
@@ -352,13 +386,13 @@ function clearAdminSession(userId) {
 
 module.exports = {
   initDatabase, getDb,
-  upsertUser, getUserByTelegramId, setUserTwitterUsername,
+  upsertUser, getUserByTelegramId, setUserTwitterUsername, checkTwitterUsernameConflict,
   upsertGroup, getGroupByTelegramId, setGroupLeaderboardTopic, setGroupMinCharLimit,
   linkUserToGroup, getUserGroups,
   createRaid, getRaid, getActiveRaids, closeRaid,
   addTask, getTasksByRaid,
   upsertTaskSubmission, getUserTaskSubmission, getUserRaidSubmissions,
-  checkRaidCompletion, awardRaidPoints,
+  checkRaidCompletion, awardRaidPoints, getUserCompletedRaidCount,
   getLeaderboard, getUserRank, getUserPoints,
   addWarning, getWarningCount,
   setAdminSession, getAdminSession, clearAdminSession,

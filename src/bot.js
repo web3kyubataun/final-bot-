@@ -14,20 +14,21 @@ const {
   handleCallbackCloseRaid,
   handleConfirmCloseRaid,
   handleAdminTextInput,
-  handleTaskPlatformCallback,
-  handleTwitterTaskCallback,
-  handleTelegramTaskCallback,
+  handleTaskToggle,
+  handleTaskConfirm,
+  handleSkipDescription,
   handleRaidGroupSelect,
 } = require('./handlers/adminHandler');
 const {
   handleTaskVerify,
+  handleVerifyButton,
   handleTelegramTaskDone,
   handleQuoteOrCommentLink,
   handleTwitterUsernameInput,
 } = require('./handlers/taskHandler');
 
 function registerHandlers(bot) {
-  // --- Register group on join ---
+  // ── Register group on bot join ──
   bot.on('my_chat_member', async (ctx) => {
     const chat = ctx.chat;
     if (chat && (chat.type === 'group' || chat.type === 'supergroup')) {
@@ -36,7 +37,7 @@ function registerHandlers(bot) {
     }
   });
 
-  // --- Message handler ---
+  // ── Message Handler ──
   bot.on('message', async (ctx) => {
     if (!ctx.from || ctx.from.is_bot) return;
 
@@ -49,18 +50,20 @@ function registerHandlers(bot) {
     const text = ctx.message?.text;
     if (!text || text.startsWith('/')) return;
 
-    // Private message session handling
     if (ctx.chat.type === 'private') {
       const session = db.getAdminSession(ctx.from.id);
       if (session) {
+        // User flow: twitter username
         if (session.state === 'waiting_twitter_username') {
           await handleTwitterUsernameInput(ctx).catch(console.error);
           return;
         }
+        // User flow: quote/comment link submission
         if (session.state === 'waiting_quote_link' || session.state === 'waiting_comment_link') {
           await handleQuoteOrCommentLink(ctx, session).catch(console.error);
           return;
         }
+        // Admin text input flows
         if (isAdmin(ctx.from.id)) {
           const handled = await handleAdminTextInput(ctx).catch(console.error);
           if (handled) return;
@@ -69,39 +72,45 @@ function registerHandlers(bot) {
       return;
     }
 
-    // Group anti-spam
+    // Group: anti-spam
     await checkAntiSpam(ctx).catch(console.error);
   });
 
-  // --- Commands ---
+  // ── Commands ──
   bot.command('start', (ctx) => handleStart(ctx).catch(console.error));
   bot.command('leaderboard', (ctx) => handleLeaderboardCommand(ctx).catch(console.error));
   bot.command('raids', (ctx) => handleRaidsCommand(ctx).catch(console.error));
   bot.command('mypoints', (ctx) => handleMyPoints(ctx).catch(console.error));
   bot.command('settwitter', (ctx) => handleSetTwitter(ctx).catch(console.error));
+
   bot.command('admin', async (ctx) => {
     if (!isAdmin(ctx.from.id)) return;
     const chatId = ctx.chat.type === 'private' ? ctx.chat.id : ctx.from.id;
     await handleAdminMenu(ctx.telegram, chatId, ctx.from.id).catch(console.error);
     if (ctx.chat.type !== 'private') ctx.deleteMessage().catch(() => {});
   });
+
   bot.command('createraid', async (ctx) => {
     if (!isAdmin(ctx.from.id)) return;
     db.setAdminSession(ctx.from.id, 'create_raid:title', {});
     const chatId = ctx.chat.type === 'private' ? ctx.chat.id : ctx.from.id;
     await ctx.telegram.sendMessage(
       chatId,
-      `*Create Raid* \\(Step 1 of 3\\)\n\n*Send the raid title:*\n_Example:_ \`Alpha Project Twitter Raid\``,
+      `*Create Raid*  \\(Step 1\\)\n\n*Send the raid title:*\n_Example:_ \`Alpha Project Twitter Raid\``,
       { parse_mode: 'MarkdownV2' }
     ).catch(console.error);
   });
 
-  // --- Callback Queries ---
+  // ── Callback Query Router ──
   bot.on('callback_query', async (ctx) => {
     const data = ctx.callbackQuery?.data;
     if (!data) return;
 
     try {
+      // Ignore no-op buttons (already-done tasks)
+      if (data === 'noop') return ctx.answerCbQuery();
+
+      // Admin panel
       if (data === 'admin:create_raid') return await handleCallbackCreateRaid(ctx);
       if (data === 'admin:active_raids') return await handleCallbackActiveRaids(ctx);
       if (data === 'admin:leaderboard') {
@@ -113,14 +122,43 @@ function registerHandlers(bot) {
       if (data === 'settings:lb_topic') return await handleCallbackSettingsLbTopic(ctx);
       if (data === 'settings:close_raid') return await handleCallbackCloseRaid(ctx);
 
-      if (data.startsWith('task_platform:')) return await handleTaskPlatformCallback(ctx, data.split(':')[1]);
-      if (data.startsWith('twitter_task:')) return await handleTwitterTaskCallback(ctx, data.split(':')[1]);
-      if (data.startsWith('telegram_task:')) return await handleTelegramTaskCallback(ctx, data.split(':')[1]);
+      // Create raid flow
+      if (data === 'create_raid:skip_description') return await handleSkipDescription(ctx);
+      if (data === 'task_confirm') return await handleTaskConfirm(ctx);
+
+      // Task type toggles
+      if (data.startsWith('task_toggle:')) {
+        const taskType = data.split(':')[1];
+        return await handleTaskToggle(ctx, taskType);
+      }
+
+      // Group selector (raid creation)
       if (data.startsWith('admin:raid_group:')) return await handleRaidGroupSelect(ctx, data.split(':')[2]);
+
+      // Raid submission
       if (data.startsWith('raid:submit:')) return await handleRaidSubmit(ctx, data.split(':')[2]);
-      if (data.startsWith('task:verify:')) return await handleTaskVerify(ctx, parseInt(data.split(':')[2], 10));
-      if (data.startsWith('task:tg_done:')) return await handleTelegramTaskDone(ctx, parseInt(data.split(':')[2], 10));
+
+      // Task verification — opening task (for comment/quote) or re-tap
+      if (data.startsWith('task:verify:')) {
+        const taskId = parseInt(data.split(':')[2], 10);
+        return await handleTaskVerify(ctx, taskId);
+      }
+
+      // Verify button (follow / like / retweet) — after user taps "Verify" button
+      if (data.startsWith('task:confirm_verify:')) {
+        const taskId = parseInt(data.split(':')[2], 10);
+        return await handleVerifyButton(ctx, taskId);
+      }
+
+      // Telegram task done
+      if (data.startsWith('task:tg_done:')) {
+        return await handleTelegramTaskDone(ctx, parseInt(data.split(':')[2], 10));
+      }
+
+      // Leaderboard group selector
       if (data.startsWith('lb:group:')) return await handleLeaderboardGroupSelect(ctx, data.split(':')[2]);
+
+      // Close raid
       if (data.startsWith('close_raid:')) return await handleConfirmCloseRaid(ctx, parseInt(data.split(':')[1], 10));
 
     } catch (err) {
