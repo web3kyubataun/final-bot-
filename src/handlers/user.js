@@ -1,13 +1,12 @@
 /**
  * user.js — User-facing handlers
  *
- * Key changes vs original:
- * - No manual approval — tasks auto-verified via API
- * - No "Disable Notifications" toggle
- * - Verify flow:
- *     like/retweet/follow/react/send → tap "I Did It" → instant verify
- *     join → tap "I Joined" → getChatMember check
- *     comment/quote → user sends tweet URL → API verify
+ * Verify flow:
+ *   like/follow   → tap "Verify" → Twitter API check (v1.1 with OAuth)
+ *   retweet       → tap "Verify" → Twitter API check (v2 bearer)
+ *   comment/quote → user sends tweet URL → API verify (author + content check)
+ *   join          → tap "Verify" → getChatMember check
+ *   react/send    → tap "Done"   → trust-based (cannot be verified remotely)
  */
 
 const store   = require('../store');
@@ -254,14 +253,20 @@ async function handleDoSubmit(ctx) {
       break;
     }
 
-    // ── Like / Follow: trust-based + Twitter API where possible ───────────────
+    // ── Like / Follow: Twitter API verification ────────────────────────────────
     case 'like':
     case 'follow': {
-      await ctx.replyWithHTML(`_Verifying..._`, { parse_mode: 'HTML' });
+      await ctx.replyWithHTML(`<i>Verifying via Twitter API...</i>`);
       const fn = task.taskType === 'like'
         ? () => tw.verifyLike(tw.extractTweetId(task.link), user.twitter)
         : () => tw.verifyFollow(tw.extractUsername(task.link), user.twitter);
-      const result = await fn().catch(() => ({ verified: true, note: 'API error — auto-approved' }));
+
+      // FIXED: do not auto-approve on API error — return failure with a retry message
+      const result = await fn().catch(() => ({
+        verified: false,
+        reason: 'Twitter API error. Please try again in a moment.',
+      }));
+
       if (result.verified) {
         await autoAward(ctx, userId, task, `${task.taskType}: ${task.link}`);
       } else {
@@ -274,13 +279,23 @@ async function handleDoSubmit(ctx) {
       break;
     }
 
-    // ── Retweet: check via API ─────────────────────────────────────────────────
+    // ── Retweet: check via Twitter API ────────────────────────────────────────
     case 'retweet': {
-      await ctx.replyWithHTML(`<i>Checking Twitter API...</i>`);
+      await ctx.replyWithHTML(`<i>Checking retweet via Twitter API...</i>`);
       const tweetId = tw.extractTweetId(task.link);
-      const result = tweetId
-        ? await tw.verifyRetweet(tweetId, user.twitter).catch(() => ({ verified: true }))
-        : { verified: true, note: 'Could not extract tweet ID' };
+
+      // FIXED: do not auto-approve if tweet ID missing or API error
+      if (!tweetId) {
+        await ctx.replyWithHTML(
+          `❌ <b>Invalid Link</b>\n\nCould not extract tweet ID from the task link. Contact an admin.`
+        );
+        break;
+      }
+
+      const result = await tw.verifyRetweet(tweetId, user.twitter).catch(() => ({
+        verified: false,
+        reason: 'Twitter API error. Please try again in a moment.',
+      }));
 
       if (result.verified) {
         await autoAward(ctx, userId, task, `retweet: ${task.link}`);
@@ -294,7 +309,7 @@ async function handleDoSubmit(ctx) {
       break;
     }
 
-    // ── Telegram react / send: trust-based (auto-award) ───────────────────────
+    // ── Telegram react / send: trust-based (cannot be verified remotely) ───────
     case 'react':
     case 'send': {
       await autoAward(ctx, userId, task, `${task.taskType} completed`);
@@ -308,12 +323,11 @@ async function handleDoSubmit(ctx) {
 
 // ── Telegram Join verification ─────────────────────────────────────────────────
 async function verifyJoin(ctx, userId, task) {
-  // Try to extract channel username from link
   const match = String(task.link || '').match(/(?:t\.me\/|@)([A-Za-z0-9_]+)/i);
   const channelId = match ? `@${match[1]}` : null;
 
   if (!channelId) {
-    // No channel ID stored — trust-based
+    // No channel link stored — trust-based
     return autoAward(ctx, userId, task, 'join completed');
   }
 
@@ -331,8 +345,13 @@ async function verifyJoin(ctx, userId, task) {
       );
     }
   } catch {
-    // Bot not in channel or other error — trust-based fallback
-    return autoAward(ctx, userId, task, `join completed (unverifiable)`);
+    // FIXED: bot is not in the channel — do not auto-award, tell user to try again
+    await ctx.replyWithHTML(
+      `⚠️ <b>Could Not Verify</b>\n\n` +
+      `The bot could not confirm your membership in <b>${channelId}</b>.\n\n` +
+      `Make sure you have joined, then tap Verify again. If the problem persists, contact an admin.`,
+      taskCardKeyboard(task.id, task.link, task.buttonLabel, task.taskType)
+    );
   }
 }
 
@@ -421,13 +440,13 @@ async function handleHelp(ctx) {
     `2. Select a task\n` +
     `3. Complete it (open the link)\n` +
     `4. Tap <b>✅ I Did It — Verify</b>\n` +
-    `5. Points are awarded <b>instantly!</b>\n\n` +
+    `5. The bot checks via Twitter API and awards points!\n\n` +
     `<b>💬 Comment/Quote Tasks</b>\n` +
     `After posting, paste your tweet URL to verify.\n\n` +
     `<b>🐦 Twitter Tasks</b>\n` +
-    `Go to Settings and set your Twitter handle first.\n\n` +
+    `Go to Settings and set your Twitter @handle first.\n\n` +
     `<b>💰 Points</b>\n` +
-    `Awarded automatically when you verify a task.`
+    `Awarded automatically after successful API verification.`
   );
 }
 
@@ -477,7 +496,12 @@ async function handleSessionInput(ctx, next) {
     await ctx.replyWithHTML('<i>Verifying reply...</i>');
     const user = store.getUser(userId);
     const originalId = tw.extractTweetId(task.link);
-    const result = await tw.verifyReply(text, originalId, user?.twitter, 20).catch(() => ({ verified: true }));
+
+    // FIXED: do not auto-approve on API error
+    const result = await tw.verifyReply(text, originalId, user?.twitter, 20).catch(() => ({
+      verified: false,
+      reason: 'Twitter API error. Please try again in a moment.',
+    }));
 
     if (result.verified) {
       await autoAward(ctx, userId, task, text);
@@ -500,7 +524,12 @@ async function handleSessionInput(ctx, next) {
     await ctx.replyWithHTML('<i>Verifying quote tweet...</i>');
     const user = store.getUser(userId);
     const originalId = tw.extractTweetId(task.link);
-    const result = await tw.verifyQuote(text, originalId, user?.twitter, 20).catch(() => ({ verified: true }));
+
+    // FIXED: do not auto-approve on API error
+    const result = await tw.verifyQuote(text, originalId, user?.twitter, 20).catch(() => ({
+      verified: false,
+      reason: 'Twitter API error. Please try again in a moment.',
+    }));
 
     if (result.verified) {
       await autoAward(ctx, userId, task, text);
@@ -582,7 +611,6 @@ function register(bot) {
   bot.hears('⚙️ Settings',    handleSettings);
   bot.hears('❓ Help',        handleHelp);
 
-  // Removed: toggle_notif (no notification toggle)
   bot.action('set_twitter',     handleSetTwitter);
   bot.action('set_wallet',      handleSetWallet);
   bot.action('set_discord',     handleSetDiscord);

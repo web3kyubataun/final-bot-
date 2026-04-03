@@ -4,13 +4,16 @@
 //  Rules:
 //  - All task interaction happens in DM only
 //  - Group "Submit Tasks" button deep-links to bot DM
-//  - Twitter: auto-verified via API
+//  - Twitter: auto-verified via API (follow/like use v1.1; retweet uses v2)
 //  - Telegram join: verified via getChatMember
 //  - Telegram react/send: user self-reports (mark as done)
 // ─────────────────────────────────────────────────────────────────────────────
 
 const db = require('../database');
-const tw = require('../twitter');
+
+// FIXED: use twitterVerify (has all functions) instead of twitter (only has verifyTweet)
+const tw = require('../utils/twitterVerify');
+
 const {
   formatTaskLabel,
   formatTaskInstruction,
@@ -132,11 +135,12 @@ async function verifyTwitterTaskNow(telegram, dmChatId, user, task, raid) {
         break;
       }
       default:
-        result = { success: false, reason: 'Unknown task type.' };
+        result = { verified: false, reason: 'Unknown task type.' };
     }
   } catch (err) {
     console.error('[TaskHandler] Twitter API error:', err.message);
-    result = { success: false, reason: 'Twitter API error\\. Please try again in a moment\\.' };
+    // FIXED: do not auto-approve on error
+    result = { verified: false, reason: 'Twitter API error\\. Please try again in a moment\\.' };
   }
 
   await deliverVerificationResult(telegram, dmChatId, user, task, raid, result);
@@ -193,7 +197,6 @@ async function handleQuoteOrCommentLink(ctx, session) {
     return;
   }
 
-  // Anti-spam: minimum characters check (done inside tw.verifyComment / tw.verifyQuoteTweet)
   db.clearAdminSession(userId);
   await ctx.reply('_Verifying your submission\\.\\.\\._', { parse_mode: 'MarkdownV2' });
 
@@ -203,13 +206,16 @@ async function handleQuoteOrCommentLink(ctx, session) {
 
   try {
     if (state === 'waiting_quote_link') {
-      result = await tw.verifyQuoteTweet(link, tweetId, user.twitter_username, minChars);
+      // FIXED: use verifyQuote (was wrongly called verifyQuoteTweet)
+      result = await tw.verifyQuote(link, tweetId, user.twitter_username, minChars);
     } else {
-      result = await tw.verifyComment(link, tweetId, user.twitter_username, minChars);
+      // FIXED: use verifyReply (was wrongly called verifyComment)
+      result = await tw.verifyReply(link, tweetId, user.twitter_username, minChars);
     }
   } catch (err) {
     console.error('[TaskHandler] Verify error:', err.message);
-    result = { success: false, reason: 'Twitter API error\\. Please try again\\.' };
+    // FIXED: do not auto-approve on error
+    result = { verified: false, reason: 'Twitter API error\\. Please try again\\.' };
   }
 
   await deliverVerificationResult(ctx.telegram, userId, user, task, raid, result);
@@ -308,28 +314,34 @@ async function handleTelegramJoinVerify(ctx, taskId) {
 
   await ctx.answerCbQuery('Checking membership…');
 
-  let result = { success: false, reason: 'Could not verify membership.' };
+  // FIXED: default to failure, not trust-based pass
+  let result = { verified: false, reason: 'Could not verify membership\\. Please try again\\.' };
 
   if (task.target_username) {
     try {
-      // target_username stores the channel @username (without @)
       const channelId = `@${task.target_username}`;
       const member = await ctx.telegram.getChatMember(channelId, userId);
       const validStatuses = ['creator', 'administrator', 'member', 'restricted'];
 
       if (validStatuses.includes(member.status)) {
-        result = { success: true };
+        result = { verified: true };
       } else {
-        result = { success: false, reason: `You have not joined @${escapeMarkdown(task.target_username)}\\. Join first, then tap Verify again\\.` };
+        result = {
+          verified: false,
+          reason: `You have not joined @${escapeMarkdown(task.target_username)}\\. Join first, then tap Verify again\\.`,
+        };
       }
     } catch (err) {
       console.error('[TaskHandler] getChatMember error:', err.message);
-      // If bot can't check (not in channel), fall back to self-report
-      result = { success: true };
+      // FIXED: if bot is not in the channel, tell user instead of auto-approving
+      result = {
+        verified: false,
+        reason: `Could not verify membership in @${escapeMarkdown(task.target_username)}\\. Make sure you have joined, then try again\\. If the issue persists, contact an admin\\.`,
+      };
     }
   } else {
-    // No target configured — accept on trust
-    result = { success: true };
+    // No target channel configured — trust-based (admin did not set a channel)
+    result = { verified: true };
   }
 
   await deliverVerificationResult(ctx.telegram, userId, user, task, raid, result);
@@ -358,7 +370,8 @@ async function handleTelegramTaskDone(ctx, taskId) {
   }
 
   await ctx.answerCbQuery();
-  await deliverVerificationResult(ctx.telegram, userId, user, task, raid, { success: true });
+  // react/send are trust-based — user self-reports
+  await deliverVerificationResult(ctx.telegram, userId, user, task, raid, { verified: true });
 }
 
 // ─────────────────────────────────────────────
@@ -367,7 +380,8 @@ async function handleTelegramTaskDone(ctx, taskId) {
 async function deliverVerificationResult(telegram, dmChatId, user, task, raid, result) {
   const taskLabel = formatTaskLabel(task);
 
-  if (!result.success) {
+  // FIXED: check result.verified (not result.success — was a field name mismatch)
+  if (!result.verified) {
     await telegram.sendMessage(
       dmChatId,
       formatVerificationFailed(taskLabel, result.reason),
