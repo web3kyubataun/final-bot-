@@ -55,7 +55,7 @@ function formatTaskInstruction(task, index) {
   const instructions = {
     follow:  `Follow the account, then tap *Verify* below\\.`,
     like:    `Like the tweet, then tap *Verify* below\\.`,
-    retweet: `Retweet the post, then tap *Verify* below\\.`,
+    retweet: `Retweet the post, then send the link to YOUR retweet here in this chat\\.`,
     comment: `Reply to the tweet with at least *${task.min_chars || 20} characters*\\. No emoji\\-only or repetitive replies\\.\n\nThen send your tweet link here in this chat\\.`,
     quote:   `Quote tweet with at least *${task.min_chars || 20} characters*\\. No emoji\\-only or repetitive content\\.\n\nThen send your quote tweet link here in this chat\\.`,
     join:    `Join the channel or group, then tap *Verify I Joined* below\\.`,
