@@ -25,7 +25,8 @@ const {
   mainMenuKeyboard, profileKeyboard, settingsKeyboard,
   taskListKeyboard, taskCardKeyboard, taskCardDMKeyboard, cancelKeyboard,
 } = require('../utils/keyboard');
-const tw = require('../utils/twitterVerify');
+const tw    = require('../utils/twitterVerify');
+const oauth = require('../oauth/twitterOAuth');
 const { Markup } = require('telegraf');
 
 const TASK_TYPE_LABELS = {
@@ -333,6 +334,7 @@ async function handleDoSubmit(ctx) {
   // Twitter tasks require a linked handle
   if (task.platform === 'twitter' && !user?.twitter) {
     session.setSession(userId, { step: 'awaiting_twitter_for_task', taskId, adminFlow: false });
+    const oauthReady = !!(process.env.TWITTER_CLIENT_ID && process.env.TWITTER_CALLBACK_URL);
     return ctx.replyWithHTML(
       `<b>Twitter Handle Required</b>\n` +
       `${'─'.repeat(28)}\n` +
@@ -340,9 +342,15 @@ async function handleDoSubmit(ctx) {
       `⚠️ <b>IMPORTANT — READ BEFORE SENDING:</b>\n` +
       `Your Twitter handle is <b>permanent</b>. Once set, it <b>cannot be changed</b> by yourself.\n` +
       `If you ever need to update it, you must <b>message the group admin</b> and they will change it for you using a special admin command.\n\n` +
-      `Send your <b>@handle</b> now:\n` +
-      `<i>Example: @johndoe</i>`,
-      cancelKeyboard()
+      (oauthReady
+        ? `<b>Recommended:</b> Use the button below to connect via OAuth — this enables real API verification for Follow &amp; Like tasks.\n\nOr type your <b>@handle</b> manually:\n<i>Example: @johndoe</i>`
+        : `Send your <b>@handle</b> now:\n<i>Example: @johndoe</i>`),
+      oauthReady
+        ? Markup.inlineKeyboard([
+            [Markup.button.callback('🔗 Connect Twitter via OAuth', 'connect_twitter_oauth')],
+            [Markup.button.callback('✖️ Cancel', 'cancel_flow')],
+          ])
+        : cancelKeyboard()
     );
   }
 
@@ -848,27 +856,81 @@ async function handleHelp(ctx) {
 
 async function handleSetTwitter(ctx) {
   await ctx.answerCbQuery();
-  const user = store.getUser(ctx.from.id);
+  const userId = ctx.from.id;
+  const user   = store.getUser(userId);
 
-  // Lock: if already set, block user from changing
+  // Already has handle → show status (lock message)
   if (user?.twitter) {
+    const oauthConnected = oauth.isConnected(userId);
     return ctx.replyWithHTML(
       `<b>Twitter Already Linked</b>\n\n` +
-      `Your Twitter handle is <b>@${user.twitter}</b>.\n\n` +
-      `<i>To change it, contact an admin. Your handle is locked to prevent cheating.</i>`
+      `Handle: <b>@${user.twitter}</b>\n` +
+      `OAuth verification: <b>${oauthConnected ? '✅ Connected' : '❌ Not connected'}</b>\n\n` +
+      (oauthConnected
+        ? `Follow &amp; Like tasks are verified via the API.\n\n<i>To disconnect OAuth or change your handle, contact an admin.</i>`
+        : `To enable API verification for Follow &amp; Like tasks, connect your Twitter account below.`),
+      oauthConnected
+        ? Markup.inlineKeyboard([[Markup.button.callback('Disconnect Twitter OAuth', 'disconnect_twitter_oauth')]])
+        : Markup.inlineKeyboard([[Markup.button.callback('🔗 Connect Twitter via OAuth', 'connect_twitter_oauth')]])
     );
   }
 
-  session.setSession(ctx.from.id, { step: 'awaiting_twitter' });
+  // No handle yet — offer both options
+  session.setSession(userId, { step: 'awaiting_twitter' });
+  const oauthAvailable = !!(process.env.TWITTER_CLIENT_ID && process.env.TWITTER_CALLBACK_URL);
   await ctx.replyWithHTML(
     `<b>Set Twitter Handle</b>\n` +
     `${'─'.repeat(28)}\n\n` +
     `⚠️ <b>IMPORTANT — READ BEFORE SENDING:</b>\n` +
     `Your Twitter handle is <b>permanent</b>. Once set, it <b>cannot be changed</b> by yourself.\n` +
     `If you ever need to update it, you must <b>message the group admin</b> — they can change it for you using a special admin command.\n\n` +
-    `Send your <b>@handle</b> now:\n` +
-    `<i>Example: @johndoe</i>`,
-    cancelKeyboard()
+    (oauthAvailable
+      ? `<b>Recommended:</b> Use the button below to connect via OAuth — this enables real API verification for Follow &amp; Like tasks.\n\n` +
+        `Or type your <b>@handle</b> manually:\n<i>Example: @johndoe</i>`
+      : `Send your <b>@handle</b> now:\n<i>Example: @johndoe</i>`),
+    oauthAvailable
+      ? Markup.inlineKeyboard([
+          [Markup.button.callback('🔗 Connect Twitter via OAuth', 'connect_twitter_oauth')],
+          [Markup.button.callback('✖️ Cancel', 'cancel_flow')],
+        ])
+      : cancelKeyboard()
+  );
+}
+
+async function handleConnectOAuth(ctx) {
+  await ctx.answerCbQuery();
+  const userId = ctx.from.id;
+
+  if (!process.env.TWITTER_CLIENT_ID || !process.env.TWITTER_CALLBACK_URL) {
+    return ctx.replyWithHTML(
+      `<b>OAuth Not Configured</b>\n\nTwitter OAuth is not set up yet. Contact an admin.`
+    );
+  }
+
+  try {
+    const url = await oauth.generateAuthUrl(userId);
+    return ctx.replyWithHTML(
+      `<b>Connect Twitter via OAuth</b>\n` +
+      `${'─'.repeat(28)}\n\n` +
+      `1. Tap the button below to open Twitter\n` +
+      `2. Authorize the app\n` +
+      `3. You'll be redirected back — the bot will confirm\n\n` +
+      `<i>This link expires in 10 minutes.</i>`,
+      Markup.inlineKeyboard([[Markup.button.url('🔗 Authorize on Twitter', url)]])
+    );
+  } catch (e) {
+    console.error('[OAuth] generateAuthUrl failed:', e.message);
+    return ctx.replyWithHTML(`<b>Error</b>\n\nCould not generate authorization link. Try again later.`);
+  }
+}
+
+async function handleDisconnectOAuth(ctx) {
+  await ctx.answerCbQuery();
+  const userId = ctx.from.id;
+  oauth.disconnect(userId);
+  return ctx.replyWithHTML(
+    `<b>Twitter OAuth Disconnected</b>\n\n` +
+    `Your OAuth tokens have been removed. Follow &amp; Like tasks will use trust-based verification until you reconnect.`
   );
 }
 
@@ -909,12 +971,14 @@ function register(bot) {
   bot.hears('Settings',    handleSettings);
   bot.hears('Help',        handleHelp);
 
-  bot.action('set_twitter',     handleSetTwitter);
-  bot.action('set_wallet',      handleSetWallet);
-  bot.action('set_discord',     handleSetDiscord);
-  bot.action('refresh_profile', ctx => handleMyProfile(ctx));
-  bot.action('close_msg',       async ctx => { await ctx.answerCbQuery(); await ctx.deleteMessage().catch(() => {}); });
-  bot.action('cancel_flow',     handleCancelFlow);
+  bot.action('set_twitter',           handleSetTwitter);
+  bot.action('connect_twitter_oauth', handleConnectOAuth);
+  bot.action('disconnect_twitter_oauth', handleDisconnectOAuth);
+  bot.action('set_wallet',            handleSetWallet);
+  bot.action('set_discord',           handleSetDiscord);
+  bot.action('refresh_profile',       ctx => handleMyProfile(ctx));
+  bot.action('close_msg',             async ctx => { await ctx.answerCbQuery(); await ctx.deleteMessage().catch(() => {}); });
+  bot.action('cancel_flow',           handleCancelFlow);
 
   bot.action(/^view_task_(\d+)$/, handleViewTask);
   bot.action(/^do_submit_(\d+)$/, handleDoSubmit);
