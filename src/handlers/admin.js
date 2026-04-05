@@ -84,11 +84,29 @@ async function handleAdminSessionInput(ctx, next) {
   }
 
   if (s.step === 'task_link') {
-    session.setSession(userId, { ...s, step:'task_reward', link:text==='none'?'':text });
-    return ctx.replyWithHTML(`Link saved.\n\n<b>Step 4 / 5</b> -- Send the <b>point reward</b>:`, cancelKeyboard());
-  }
+      const linkVal = text === 'none' ? '' : text;
+      const isComment = s.taskTypes ? s.taskTypes.includes('comment') : s.taskType === 'comment';
+      if (isComment) {
+        session.setSession(userId, { ...s, step: 'task_min_chars', link: linkVal });
+        return ctx.replyWithHTML(
+          `Link saved.\n\n<b>Step 4 / 6</b> -- Set <b>minimum comment characters</b>:\n` +
+          `Send a number (e.g. <code>50</code>) or <code>0</code> to skip the limit.\n` +
+          `<i>Users must write at least this many characters in their reply.</i>`,
+          cancelKeyboard()
+        );
+      }
+      session.setSession(userId, { ...s, step: 'task_reward', link: linkVal });
+      return ctx.replyWithHTML(`Link saved.\n\n<b>Step 4 / 5</b> -- Send the <b>point reward</b>:`, cancelKeyboard());
+    }
 
-  if (s.step === 'task_reward') {
+  if (s.step === 'task_min_chars') {
+      const n = parseInt(text);
+      const minChars = (!isNaN(n) && n >= 0) ? n : 0;
+      session.setSession(userId, { ...s, step: 'task_reward', minChars });
+      return ctx.replyWithHTML(`Min characters set to <b>${minChars || 'none'}</b>.\n\n<b>Step 5 / 6</b> -- Send the <b>point reward</b>:`, cancelKeyboard());
+    }
+
+      if (s.step === 'task_reward') {
     const reward = parseInt(text);
     if (isNaN(reward)||reward<0) return ctx.reply('Enter a valid number (e.g. 100)');
     session.clearSession(userId);
@@ -107,7 +125,7 @@ async function handleAdminSessionInput(ctx, next) {
 
     const platLabel = s.platform==='telegram'?'Telegram':'Twitter/X';
     const btnLabel  = `${platLabel} - ${typeLabel}`;
-    const task = store.createTask(groupId, s.title, s.link, reward, s.taskKind, btnLabel, s.platform, finalTaskType, finalTaskTypes);
+    const task = store.createTask(groupId, s.title, s.link, reward, s.taskKind, btnLabel, s.platform, finalTaskType, finalTaskTypes, s.minChars || 0);
     const broadcastMsg =
       `<b>New ${s.taskKind==='raid'?'Raid':'Task'}!</b>\n${'─'.repeat(28)}\n`+
       `<b>${task.title}</b>\n${platLabel} - ${typeLabel}\n`+
@@ -116,7 +134,7 @@ async function handleAdminSessionInput(ctx, next) {
     const group    = store.getGroup(groupId);
     const topicKey = s.taskKind==='raid'?'raids':'quests';
     const topicId  = group?.topics?.[topicKey]||group?.topics?.notifications||null;
-    const botName  = getBotUsername();
+    const botName  = getBotUsername() || 'MomentumHubBot';
     const { taskCardDMKeyboard } = require('../utils/keyboard');
     try {
       await ctx.telegram.sendMessage(groupId, broadcastMsg, {

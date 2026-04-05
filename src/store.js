@@ -160,7 +160,7 @@ function setUserField(userId, field, value) {
  * taskType: 'like' | 'retweet' | 'follow' | 'comment' | 'quote'
  *           'join' | 'react' | 'send'
  */
-function createTask(groupId, title, link, reward, type, buttonLabel, platform, taskType, taskTypes) {
+function createTask(groupId, title, link, reward, type, buttonLabel, platform, taskType, taskTypes, minChars) {
   const id = ++store.taskCounter;
   store.tasks[id] = {
     id,
@@ -173,6 +173,7 @@ function createTask(groupId, title, link, reward, type, buttonLabel, platform, t
     platform: platform || 'twitter',
     taskType: taskType || 'like',
     taskTypes: taskTypes ? JSON.stringify(taskTypes) : null,
+    minChars: parseInt(minChars) || 0,
     active: true,
     createdAt: new Date().toISOString(),
   };

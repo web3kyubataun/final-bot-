@@ -134,7 +134,7 @@ async function handleViewTask(ctx) {
   store.getOrCreateUser(ctx.from.id, ctx.from.username || ctx.from.first_name);
 
   const isInGroup = ctx.chat?.type !== 'private';
-  const botName   = getBotUsername();
+  const botName   = getBotUsername() || 'MomentumHubBot';
   return sendTaskCard(ctx, task, !isInGroup, isInGroup, botName);
 }
 
@@ -225,7 +225,7 @@ async function handleDoSubmit(ctx) {
 
   // Redirect to DM if in group
   if (isInGroup) {
-    const botName = getBotUsername();
+    const botName = getBotUsername() || 'MomentumHubBot';
     await ctx.answerCbQuery('Please complete tasks in your private chat with the bot.', { show_alert: true });
     if (botName) {
       await ctx.reply(
@@ -325,25 +325,25 @@ async function routeTaskAction(ctx, userId, task, user, actionType) {
       break;
     }
 
-    case 'like':
-    case 'follow': {
-      await ctx.replyWithHTML(`<i>Verifying via Twitter API...</i>`);
-      const fn = actionType === 'like'
-        ? () => tw.verifyLike(tw.extractTweetId(task.link), user.twitter)
-        : () => tw.verifyFollow(tw.extractUsername(task.link), user.twitter);
+    case 'like': {
+      // Trust-based — award immediately without API check
+      await completeAction(ctx, userId, task, user, 'like');
+      break;
+    }
 
-      const result = await fn().catch(() => ({
+    case 'follow': {
+      await ctx.replyWithHTML(`<i>Verifying follow via Twitter API...</i>`);
+      const followResult = await tw.verifyFollow(tw.extractUsername(task.link), user.twitter).catch(() => ({
         verified: false,
         reason: 'Twitter API error. Please try again in a moment.',
       }));
-
-      if (result.verified) {
-        await completeAction(ctx, userId, task, user, actionType);
+      if (followResult.verified) {
+        await completeAction(ctx, userId, task, user, 'follow');
       } else {
         await ctx.replyWithHTML(
-          `<b>Not Verified</b>\n\n${result.reason}\n\n` +
-          `<i>Complete the task first, then tap Verify again.</i>`,
-          taskCardKeyboard(task.id, task.link, task.buttonLabel, actionType)
+          `<b>Not Verified</b>\n\n${followResult.reason}\n\n` +
+          `<i>Follow the account first, then tap Verify again.</i>`,
+          taskCardKeyboard(task.id, task.link, task.buttonLabel, 'follow')
         );
       }
       break;
@@ -504,13 +504,38 @@ async function handleSessionInput(ctx, next) {
   }
 
   if (s.step === 'awaiting_comment_url' || s.step === 'awaiting_quote_url') {
-    if (!text.startsWith('http')) return ctx.reply('Please send a valid URL starting with https://');
-    const task = store.getTask(s.taskId);
-    if (!task) { session.clearSession(userId); return ctx.reply('Task not found.'); }
-    const user = store.getUser(userId);
-    session.clearSession(userId);
-    return completeAction(ctx, userId, task, user, s.step === 'awaiting_comment_url' ? 'comment' : 'quote');
-  }
+      if (!text.startsWith('http')) return ctx.reply('Please send a valid URL starting with https://');
+      const task = store.getTask(s.taskId);
+      if (!task) { session.clearSession(userId); return ctx.reply('Task not found.'); }
+      const isCommentStep = s.step === 'awaiting_comment_url';
+      // If comment task has a minimum character requirement, ask for the text next
+      if (isCommentStep && task.minChars > 0) {
+        session.setSession(userId, { ...s, step: 'awaiting_comment_text', commentUrl: text });
+        return ctx.replyWithHTML(
+          `<b>URL Received!</b>\n\nNow paste your <b>comment text</b> so we can verify the length.\n` +
+          `<i>Minimum required: ${task.minChars} characters.</i>`
+        );
+      }
+      const user = store.getUser(userId);
+      session.clearSession(userId);
+      return completeAction(ctx, userId, task, user, isCommentStep ? 'comment' : 'quote');
+    }
+
+    if (s.step === 'awaiting_comment_text') {
+      const task = store.getTask(s.taskId);
+      if (!task) { session.clearSession(userId); return ctx.reply('Task not found.'); }
+      if (task.minChars > 0 && text.length < task.minChars) {
+        return ctx.replyWithHTML(
+          `<b>Comment Too Short</b>\n\n` +
+          `Your comment has <b>${text.length}</b> characters, but at least <b>${task.minChars}</b> are required.\n` +
+          `<i>Please write a longer reply on Twitter, then submit again.</i>`,
+          cancelKeyboard()
+        );
+      }
+      const user = store.getUser(userId);
+      session.clearSession(userId);
+      return completeAction(ctx, userId, task, user, 'comment');
+    }
 
   return next();
 }
@@ -520,19 +545,17 @@ async function handleSessionInput(ctx, next) {
 // ═══════════════════════════════════════════════
 
 async function handleLeaderboard(ctx) {
-  const groups = store.getAllGroups();
-  if (!groups.length) return ctx.replyWithHTML('<b>Leaderboard</b>\n\n<i>No groups set up yet.</i>');
-  for (const g of groups) {
-    const top = store.getLeaderboard(g.id, 10);
-    if (!top.length) continue;
+    const top = store.getLeaderboard(10);
+    if (!top.length) {
+      return ctx.replyWithHTML('<b>Leaderboard</b>\n\n<i>No points earned yet. Complete tasks to get on the board!</i>');
+    }
     const lines = top.map((u, i) => {
-      const rank = i === 0 ? '1st' : i === 1 ? '2nd' : i === 2 ? '3rd' : `${i+1}th`;
-      const name = u.username ? `@${u.username}` : (u.displayName || u.id);
-      return `${rank}. ${name} -- ${u.points} pts`;
+      const rank = i === 0 ? '1st' : i === 1 ? '2nd' : i === 2 ? '3rd' : `${i + 1}th`;
+      const name = u.username ? `@${u.username}` : u.id;
+      return `${rank}. ${name} — ${u.points} pts`;
     }).join('\n');
-    await ctx.replyWithHTML(`<b>Leaderboard</b> -- ${g.groupName || g.id}\n${'─'.repeat(28)}\n\n${lines}`);
+    await ctx.replyWithHTML(`<b>Leaderboard</b>\n${'─'.repeat(28)}\n\n${lines}`);
   }
-}
 
 // ═══════════════════════════════════════════════
 //  PROFILE

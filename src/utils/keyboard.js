@@ -53,7 +53,7 @@ function taskCardKeyboard(taskId, taskLink, btnLabel, taskType) {
   return Markup.inlineKeyboard(rows);
 }
 
-function taskCardDMKeyboard(taskId, taskLink, btnLabel, botUsername) {
+function taskCardDMKeyboard(taskId, taskLink, btnLabel, botUsername = 'MomentumHubBot') {
   const rows = [];
   if (taskLink) rows.push([Markup.button.url(btnLabel || 'Open Link', taskLink)]);
   rows.push([
