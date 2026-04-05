@@ -1,88 +1,80 @@
 /**
- * sqlite.js — Persistent SQLite storage for OAuth tokens only.
- * All other bot data stays in-memory (store.js).
- * Uses better-sqlite3 (synchronous, fast, zero config).
+ * sqlite.js — Lightweight JSON-file token storage.
+ * Replaces better-sqlite3 (which requires native compilation unavailable on Alpine).
+ * Stores OAuth tokens and PKCE states in /tmp/oauth_tokens.json and /tmp/oauth_states.json
  */
 
-const Database = require('better-sqlite3');
-const path     = require('path');
+const fs   = require('fs');
+const path = require('path');
 
-const DB_PATH = process.env.SQLITE_PATH || '/tmp/oauth.db';
+const TOKENS_PATH = process.env.OAUTH_TOKENS_PATH || '/tmp/oauth_tokens.json';
+const STATES_PATH = process.env.OAUTH_STATES_PATH || '/tmp/oauth_states.json';
 
-let db;
-function getDb() {
-  if (!db) {
-    const { mkdirSync } = require('fs');
-    mkdirSync(path.dirname(DB_PATH), { recursive: true });
-    db = new Database(DB_PATH);
-    db.pragma('journal_mode = WAL');
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS oauth_tokens (
-        telegram_user_id TEXT PRIMARY KEY,
-        access_token     TEXT NOT NULL,
-        refresh_token    TEXT,
-        expires_at       INTEGER NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS oauth_states (
-        state            TEXT PRIMARY KEY,
-        telegram_user_id TEXT NOT NULL,
-        code_verifier    TEXT NOT NULL,
-        created_at       INTEGER NOT NULL
-      );
-    `);
+function readJson(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch {
+    return {};
   }
-  return db;
+}
+
+function writeJson(filePath, data) {
+  fs.writeFileSync(filePath, JSON.stringify(data), 'utf8');
 }
 
 // ── Tokens ────────────────────────────────────────────────────────────────────
 
 function saveTokens(telegramUserId, accessToken, refreshToken, expiresInSeconds) {
-  const expiresAt = Date.now() + (expiresInSeconds - 60) * 1000; // 60s early
-  getDb().prepare(
-    `INSERT INTO oauth_tokens (telegram_user_id, access_token, refresh_token, expires_at)
-     VALUES (?, ?, ?, ?)
-     ON CONFLICT(telegram_user_id) DO UPDATE
-     SET access_token=excluded.access_token,
-         refresh_token=excluded.refresh_token,
-         expires_at=excluded.expires_at`
-  ).run(String(telegramUserId), accessToken, refreshToken || null, expiresAt);
+  const tokens = readJson(TOKENS_PATH);
+  tokens[String(telegramUserId)] = {
+    access_token:  accessToken,
+    refresh_token: refreshToken || null,
+    expires_at:    Date.now() + (expiresInSeconds - 60) * 1000,
+  };
+  writeJson(TOKENS_PATH, tokens);
 }
 
 function getTokens(telegramUserId) {
-  return getDb().prepare(
-    `SELECT * FROM oauth_tokens WHERE telegram_user_id = ?`
-  ).get(String(telegramUserId)) || null;
+  const tokens = readJson(TOKENS_PATH);
+  return tokens[String(telegramUserId)] || null;
 }
 
 function deleteTokens(telegramUserId) {
-  getDb().prepare(`DELETE FROM oauth_tokens WHERE telegram_user_id = ?`)
-    .run(String(telegramUserId));
+  const tokens = readJson(TOKENS_PATH);
+  delete tokens[String(telegramUserId)];
+  writeJson(TOKENS_PATH, tokens);
 }
 
 // ── OAuth States (PKCE) ───────────────────────────────────────────────────────
 
 function saveState(state, telegramUserId, codeVerifier) {
-  getDb().prepare(
-    `INSERT OR REPLACE INTO oauth_states (state, telegram_user_id, code_verifier, created_at)
-     VALUES (?, ?, ?, ?)`
-  ).run(state, String(telegramUserId), codeVerifier, Date.now());
+  const states = readJson(STATES_PATH);
+  states[state] = {
+    telegram_user_id: String(telegramUserId),
+    code_verifier:    codeVerifier,
+    created_at:       Date.now(),
+  };
+  writeJson(STATES_PATH, states);
 }
 
 function popState(state) {
-  const row = getDb().prepare(
-    `SELECT * FROM oauth_states WHERE state = ?`
-  ).get(state);
+  const states = readJson(STATES_PATH);
+  const row = states[state];
   if (!row) return null;
-  getDb().prepare(`DELETE FROM oauth_states WHERE state = ?`).run(state);
-  // Expire states older than 10 minutes
-  if (Date.now() - row.created_at > 10 * 60 * 1000) return null;
+  delete states[state];
+  writeJson(STATES_PATH, states);
+  if (Date.now() - row.created_at > 10 * 60 * 1000) return null; // expired
   return row;
 }
 
 function cleanOldStates() {
-  getDb().prepare(
-    `DELETE FROM oauth_states WHERE created_at < ?`
-  ).run(Date.now() - 10 * 60 * 1000);
+  const states = readJson(STATES_PATH);
+  const cutoff = Date.now() - 10 * 60 * 1000;
+  let changed = false;
+  for (const [key, row] of Object.entries(states)) {
+    if (row.created_at < cutoff) { delete states[key]; changed = true; }
+  }
+  if (changed) writeJson(STATES_PATH, states);
 }
 
 module.exports = { saveTokens, getTokens, deleteTokens, saveState, popState, cleanOldStates };
