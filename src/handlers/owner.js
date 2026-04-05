@@ -27,17 +27,17 @@ async function handleAddGroup(ctx) {
   }
 
   if (store.isGroupRegistered(groupId)) {
-    return ctx.replyWithHTML(`⚠️ Group <code>${groupId}</code> is already registered.`);
+    return ctx.replyWithHTML(` Group <code>${groupId}</code> is already registered.`);
   }
 
-  await ctx.reply('⏳ Registering group and trying to create Google Sheet...');
+  await ctx.reply(' Registering group and trying to create Google Sheet...');
 
   let sheetId  = 'none';
   let sheetMsg = '';
 
   try {
     sheetId  = await sheets.createGroupSheet(groupName || `Group_${groupId}`);
-    sheetMsg = `📊 Sheet created automatically ✅\nID: <code>${sheetId}</code>`;
+    sheetMsg = ` Sheet created automatically \nID: <code>${sheetId}</code>`;
   } catch (e) {
     console.error('Sheet auto-creation error:', e.message);
 
@@ -48,7 +48,7 @@ async function handleAddGroup(ctx) {
       : `3. Share the sheet with your service account email <b>(Editor access)</b>`;
 
     sheetMsg =
-      `⚠️ <b>Auto sheet creation failed.</b>\n\n` +
+      ` <b>Auto sheet creation failed.</b>\n\n` +
       `<b>Fix — create the sheet manually (1 min):</b>\n` +
       `1. Go to <a href="https://sheets.google.com">sheets.google.com</a> and create a new spreadsheet\n` +
       `2. Copy the Sheet ID from the URL:\n` +
@@ -62,9 +62,9 @@ async function handleAddGroup(ctx) {
   if (groupName) group.groupName = groupName;
 
   await ctx.replyWithHTML(
-    `✅ <b>Group Registered!</b>\n\n` +
-    `🆔 ID: <code>${groupId}</code>\n` +
-    `📛 Name: ${groupName || 'Unknown'}\n\n` +
+    ` <b>Group Registered!</b>\n\n` +
+    ` ID: <code>${groupId}</code>\n` +
+    ` Name: ${groupName || 'Unknown'}\n\n` +
     `${sheetMsg}`
   );
 }
@@ -88,25 +88,25 @@ async function handleSetSheet(ctx) {
   }
 
   if (!store.isGroupRegistered(groupId)) {
-    return ctx.replyWithHTML(`⚠️ Group <code>${groupId}</code> is not registered. Run /addgroup first.`);
+    return ctx.replyWithHTML(` Group <code>${groupId}</code> is not registered. Run /addgroup first.`);
   }
 
-  await ctx.reply('⏳ Linking sheet and setting up headers...');
+  await ctx.reply(' Linking sheet and setting up headers...');
 
   try {
     await sheets.setupManualSheet(sheetId);
     const group = store.getGroup(groupId);
     group.sheetId = sheetId;
     await ctx.replyWithHTML(
-      `✅ <b>Sheet linked successfully!</b>\n\n` +
-      `📊 Sheet ID: <code>${sheetId}</code>\n` +
-      `🗂 Headers (Submissions & Users tabs) created.\n\n` +
+      ` <b>Sheet linked successfully!</b>\n\n` +
+      ` Sheet ID: <code>${sheetId}</code>\n` +
+      ` Headers (Submissions & Users tabs) created.\n\n` +
       `Submissions will now be logged automatically.`
     );
   } catch (e) {
     const saEmail = sheets.getServiceAccountEmail();
     await ctx.replyWithHTML(
-      `❌ <b>Failed to access the sheet.</b>\n\n` +
+      ` <b>Failed to access the sheet.</b>\n\n` +
       `<b>Error:</b> ${e.message}\n\n` +
       `<b>Most likely cause:</b> The sheet hasn't been shared with the service account.\n\n` +
       (saEmail
@@ -128,13 +128,13 @@ async function handleRemoveGroup(ctx) {
   }
 
   if (!store.isGroupRegistered(groupId)) {
-    return ctx.replyWithHTML(`⚠️ Group <code>${groupId}</code> is not registered.`);
+    return ctx.replyWithHTML(` Group <code>${groupId}</code> is not registered.`);
   }
 
   const g = store.getGroup(groupId);
   store.removeGroup(groupId);
   await ctx.replyWithHTML(
-    `✅ <b>Group Removed</b>\n\n` +
+    ` <b>Group Removed</b>\n\n` +
     `<b>${g.groupName || groupId}</b> (<code>${groupId}</code>) has been unregistered.`
   );
 }
@@ -145,11 +145,11 @@ async function handleListGroups(ctx) {
   if (!groups.length) return ctx.reply('No groups registered yet.');
   const lines = groups.map((g, i) =>
     `${i + 1}. <b>${g.groupName || 'Unknown'}</b>\n` +
-    `   🆔 <code>${g.id}</code>\n` +
-    `   🔐 Mode: ${g.accessMode}  |  Admins: ${g.admins?.size || 0}\n` +
-    `   📊 Sheet: ${g.sheetId !== 'none' ? `✅ <code>${g.sheetId.slice(0, 16)}…</code>` : '❌ Not linked'}`
+    `    <code>${g.id}</code>\n` +
+    `    Mode: ${g.accessMode}  |  Admins: ${g.admins?.size || 0}\n` +
+    `    Sheet: ${g.sheetId !== 'none' ? ` <code>${g.sheetId.slice(0, 16)}…</code>` : ' Not linked'}`
   ).join('\n\n');
-  await ctx.replyWithHTML(`📋 <b>Registered Groups (${groups.length})</b>\n\n${lines}`);
+  await ctx.replyWithHTML(` <b>Registered Groups (${groups.length})</b>\n\n${lines}`);
 }
 
 // ── /broadcast ────────────────────────────────────────────────
@@ -157,14 +157,14 @@ async function handleBroadcast(ctx) {
   const text = ctx.message.text.split(' ').slice(1).join(' ');
   if (!text) return ctx.reply('Usage: /broadcast <message>');
   const users = store.getAllUsers().filter(u => !u.banned && u.notifications !== false);
-  await ctx.reply(`📤 Sending to ${users.length} users...`);
+  await ctx.reply(` Sending to ${users.length} users...`);
   let sent = 0, failed = 0;
   for (const user of users) {
-    try { await ctx.telegram.sendMessage(user.id, `📢 <b>Broadcast</b>\n\n${text}`, { parse_mode: 'HTML' }); sent++; }
+    try { await ctx.telegram.sendMessage(user.id, ` <b>Broadcast</b>\n\n${text}`, { parse_mode: 'HTML' }); sent++; }
     catch { failed++; }
     await delay(50);
   }
-  await ctx.reply(`✅ Done!  Sent: ${sent}  |  Failed: ${failed}`);
+  await ctx.reply(` Done!  Sent: ${sent}  |  Failed: ${failed}`);
 }
 
 // ── /ownerhelp ────────────────────────────────────────────────
@@ -172,7 +172,7 @@ async function handleOwnerHelp(ctx) {
   const ownerList  = config.OWNER_IDS.join(', ') || 'none';
   const saEmail    = sheets.getServiceAccountEmail();
   await ctx.replyWithHTML(
-    `👑 <b>Owner Commands</b>\n` +
+    ` <b>Owner Commands</b>\n` +
     `${'─'.repeat(30)}\n\n` +
     `<b>Owner IDs:</b> <code>${ownerList}</code>\n` +
     (saEmail ? `<b>Service Account:</b>\n<code>${saEmail}</code>\n` : '') +
@@ -185,8 +185,8 @@ async function handleOwnerHelp(ctx) {
     `<b>Broadcasting</b>\n` +
     `/broadcast &lt;msg&gt; — DM all bot users\n\n` +
     `<b>Owners vs Admins</b>\n` +
-    `👑 <b>Owners</b>: Set in .env (BOT_OWNER_IDS). Can whitelist groups & manage sheets.\n` +
-    `🛠 <b>Admins</b>: Added per-group. Can manage tasks, raids & submissions.`
+    ` <b>Owners</b>: Set in .env (BOT_OWNER_IDS). Can whitelist groups & manage sheets.\n` +
+    ` <b>Admins</b>: Added per-group. Can manage tasks, raids & submissions.`
   );
 }
 

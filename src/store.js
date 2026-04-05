@@ -142,6 +142,11 @@ function unbanUser(userId) {
 }
 
 function addPoints(userId, points) {
+
+function setUserField(userId, field, value) {
+  const user = store.users[String(userId)];
+  if (user) user[field] = value;
+}
   const u = store.users[String(userId)];
   if (u) u.points = Math.max(0, (u.points || 0) + points);
 }
@@ -155,7 +160,7 @@ function addPoints(userId, points) {
  * taskType: 'like' | 'retweet' | 'follow' | 'comment' | 'quote'
  *           'join' | 'react' | 'send'
  */
-function createTask(groupId, title, link, reward, type, buttonLabel, platform, taskType) {
+function createTask(groupId, title, link, reward, type, buttonLabel, platform, taskType, taskTypes) {
   const id = ++store.taskCounter;
   store.tasks[id] = {
     id,
@@ -167,6 +172,7 @@ function createTask(groupId, title, link, reward, type, buttonLabel, platform, t
     buttonLabel: buttonLabel || null,
     platform: platform || 'twitter',
     taskType: taskType || 'like',
+    taskTypes: taskTypes ? JSON.stringify(taskTypes) : null,
     active: true,
     createdAt: new Date().toISOString(),
   };
@@ -314,7 +320,7 @@ module.exports = {
   addGroup, removeGroup, getGroup, getAllGroups, isGroupRegistered,
   setGroupTopic, setGroupMeta, getGroupsForAdmin,
   getOrCreateUser, getUser, getAllUsers, banUser, unbanUser, addPoints,
-  createTask, getTask, deactivateTask, getTasksForGroup, getAllTasksForGroup,
+  createTask, getTask, setUserField, deactivateTask, getTasksForGroup, getAllTasksForGroup,
   createSubmission, hasSubmitted, getSubmission, approveSubmission, rejectSubmission,
   getSubmissionsForGroup,
   addAdmin, removeAdmin, isAdmin,
