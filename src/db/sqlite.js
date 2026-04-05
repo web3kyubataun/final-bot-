@@ -7,7 +7,7 @@
 const Database = require('better-sqlite3');
 const path     = require('path');
 
-const DB_PATH = process.env.SQLITE_PATH || path.join(__dirname, '../../data/oauth.db');
+const DB_PATH = process.env.SQLITE_PATH || '/tmp/oauth.db';
 
 let db;
 function getDb() {
