@@ -1,11 +1,9 @@
 require('dotenv').config();
 const { Telegraf } = require('telegraf');
-const express   = require('express');
 const config    = require('./src/config');          // FIX: was ./config (missing root file)
 const botInfo   = require('./src/botInfo');          // FIX: was ./botInfo (missing root file)
 const { userMiddleware } = require('./src/middleware/auth');
 const { startScheduler }  = require('./src/scheduler');
-const { router: authRouter, setBotInstance } = require('./src/routes/authCallback');
 
 const ownerHandler = require('./src/handlers/owner');
 const groupHandler = require('./src/handlers/group');
@@ -57,13 +55,6 @@ bot.catch((err, ctx) => {
 });
 
 async function launch() {
-  // ── Express HTTP server (OAuth callback + healthcheck) ──────────────────────
-  const PORT = process.env.PORT || 3000;
-  const app  = express();
-  app.use(authRouter);
-  app.get('/health', (_req, res) => res.send('OK'));
-  app.listen(PORT, () => console.log(`[HTTP] Listening on port ${PORT}`));
-
   try {
     await bot.telegram.deleteWebhook({ drop_pending_updates: false });
     console.log('[Bot] Webhook cleared.');
@@ -75,7 +66,6 @@ async function launch() {
     .then(async () => {
       const me = await bot.telegram.getMe();
       botInfo.setBotUsername(me.username);
-      setBotInstance(bot); // give the OAuth callback a reference to the bot for DMs
       console.log(`@${me.username} is running (polling)`);
       console.log(`Owners: ${config.OWNER_IDS.join(', ')}`);
       // Start scheduler AFTER bot username is set
