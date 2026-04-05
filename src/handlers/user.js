@@ -336,10 +336,12 @@ async function handleDoSubmit(ctx) {
     return ctx.replyWithHTML(
       `<b>Twitter Handle Required</b>\n` +
       `${'─'.repeat(28)}\n` +
-      `This is a Twitter task. Link your Twitter handle first.\n\n` +
-      `Send your <b>@handle</b>:\n` +
-      `<i>Example: @johndoe</i>\n\n` +
-      `<i>You only need to do this once. It cannot be changed after setting.</i>`,
+      `This is a Twitter task — you need to link your Twitter handle first.\n\n` +
+      `⚠️ <b>IMPORTANT — READ BEFORE SENDING:</b>\n` +
+      `Your Twitter handle is <b>permanent</b>. Once set, it <b>cannot be changed</b> by yourself.\n` +
+      `If you ever need to update it, you must <b>message the group admin</b> and they will change it for you using a special admin command.\n\n` +
+      `Send your <b>@handle</b> now:\n` +
+      `<i>Example: @johndoe</i>`,
       cancelKeyboard()
     );
   }
@@ -433,8 +435,15 @@ async function routeTaskAction(ctx, userId, task, user, actionType) {
       const likeResult = await tw.verifyLike(tweetId, user.twitter, userId).catch(() => ({
         verified: true, trustBased: true,
       }));
-      // needsOAuth = no user token connected yet → trust-based fallback
       if (likeResult.verified || likeResult.needsOAuth) {
+        // needsOAuth = no OAuth connected yet → trust-based: record and award
+        if (likeResult.needsOAuth) {
+          await ctx.replyWithHTML(
+            `<b>Like Recorded ✓</b>\n\n` +
+            `Your like has been recorded. Points will be awarded.\n` +
+            `<i>Full API verification requires OAuth — not yet available.</i>`
+          );
+        }
         await completeAction(ctx, userId, task, user, 'like');
       } else {
         await ctx.replyWithHTML(
@@ -451,8 +460,15 @@ async function routeTaskAction(ctx, userId, task, user, actionType) {
       const followResult = await tw.verifyFollow(tw.extractUsername(task.link), user.twitter, userId).catch(() => ({
         verified: true, trustBased: true,
       }));
-      // needsOAuth = no user token connected yet → trust-based fallback
       if (followResult.verified || followResult.needsOAuth) {
+        // needsOAuth = no OAuth connected yet → trust-based: record and award
+        if (followResult.needsOAuth) {
+          await ctx.replyWithHTML(
+            `<b>Follow Recorded ✓</b>\n\n` +
+            `Your follow has been recorded. Points will be awarded.\n` +
+            `<i>Full API verification requires OAuth — not yet available.</i>`
+          );
+        }
         await completeAction(ctx, userId, task, user, 'follow');
       } else {
         await ctx.replyWithHTML(
@@ -845,10 +861,13 @@ async function handleSetTwitter(ctx) {
 
   session.setSession(ctx.from.id, { step: 'awaiting_twitter' });
   await ctx.replyWithHTML(
-    `<b>Set Twitter Handle</b>\n\n` +
-    `Send your Twitter @handle:\n` +
-    `<i>Example: @johndoe</i>\n\n` +
-    `<i>This can only be set once. Contact an admin if you need to change it.</i>`,
+    `<b>Set Twitter Handle</b>\n` +
+    `${'─'.repeat(28)}\n\n` +
+    `⚠️ <b>IMPORTANT — READ BEFORE SENDING:</b>\n` +
+    `Your Twitter handle is <b>permanent</b>. Once set, it <b>cannot be changed</b> by yourself.\n` +
+    `If you ever need to update it, you must <b>message the group admin</b> — they can change it for you using a special admin command.\n\n` +
+    `Send your <b>@handle</b> now:\n` +
+    `<i>Example: @johndoe</i>`,
     cancelKeyboard()
   );
 }
