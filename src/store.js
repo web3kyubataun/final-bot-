@@ -142,13 +142,13 @@ function unbanUser(userId) {
 }
 
 function addPoints(userId, points) {
+  const u = store.users[String(userId)];
+  if (u) u.points = Math.max(0, (u.points || 0) + points);
+}
 
 function setUserField(userId, field, value) {
   const user = store.users[String(userId)];
   if (user) user[field] = value;
-}
-  const u = store.users[String(userId)];
-  if (u) u.points = Math.max(0, (u.points || 0) + points);
 }
 
 // ═══════════════════════════════════════════════
