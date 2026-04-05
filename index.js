@@ -1,20 +1,21 @@
 require('dotenv').config();
 const { Telegraf } = require('telegraf');
-const config    = require('./config');
-const botInfo   = require('./botInfo');
-const { userMiddleware } = require('./middleware/auth');
+const config    = require('./src/config');          // FIX: was ./config (missing root file)
+const botInfo   = require('./src/botInfo');          // FIX: was ./botInfo (missing root file)
+const { userMiddleware } = require('./src/middleware/auth');
+const { startScheduler }  = require('./src/scheduler');
 
-const ownerHandler = require('./handlers/owner');
-const groupHandler = require('./handlers/group');
-const adminHandler = require('./handlers/admin');
-const userHandler  = require('./handlers/user');
+const ownerHandler = require('./src/handlers/owner');
+const groupHandler = require('./src/handlers/group');
+const adminHandler = require('./src/handlers/admin');
+const userHandler  = require('./src/handlers/user');
 
 if (!config.BOT_TOKEN) {
-  console.error(' BOT_TOKEN is missing from environment variables');
+  console.error('BOT_TOKEN is missing from environment variables');
   process.exit(1);
 }
 if (!config.OWNER_IDS.length) {
-  console.error(' BOT_OWNER_IDS (or BOT_OWNER_ID / OWNER_ID) is missing from environment variables');
+  console.error('BOT_OWNER_IDS is missing from environment variables');
   process.exit(1);
 }
 
@@ -31,6 +32,7 @@ bot.use(async (ctx, next) => {
 
 bot.use(userMiddleware);
 
+// Order matters: admin session middleware must run first
 adminHandler.register(bot);
 ownerHandler.register(bot);
 groupHandler.register(bot);
@@ -41,15 +43,15 @@ bot.on('message', async (ctx) => {
   const text = ctx.message?.text;
   if (!text || !text.startsWith('/')) return;
   await ctx.replyWithHTML(
-    ` <b>Unknown command</b>: <code>${text.split(' ')[0]}</code>\n\nUse the menu to navigate.`
+    `<b>Unknown command</b>: <code>${text.split(' ')[0]}</code>\n\nUse /help to see what's available.`
   );
 });
 
 bot.catch((err, ctx) => {
   if (err?.response?.error_code === 403) return;
   if (err?.response?.error_code === 400 && err?.message?.includes('message is not modified')) return;
-  console.error(` [${ctx?.updateType}] ${err.message}`);
-  ctx?.reply(' An error occurred. Please try again.').catch(() => {});
+  console.error(`[${ctx?.updateType}] ${err.message}`);
+  ctx?.reply('An error occurred. Please try again.').catch(() => {});
 });
 
 async function launch() {
@@ -64,11 +66,13 @@ async function launch() {
     .then(async () => {
       const me = await bot.telegram.getMe();
       botInfo.setBotUsername(me.username);
-      console.log(` @${me.username} is running (polling)`);
-      console.log(` Owners: ${config.OWNER_IDS.join(', ')}`);
+      console.log(`@${me.username} is running (polling)`);
+      console.log(`Owners: ${config.OWNER_IDS.join(', ')}`);
+      // Start scheduler AFTER bot username is set
+      startScheduler(bot.telegram);
     })
     .catch(err => {
-      console.error(' Failed to launch:', err.message);
+      console.error('Failed to launch:', err.message);
       process.exit(1);
     });
 }

@@ -1,6 +1,6 @@
 /**
  * store.js — In-memory data store
- * Replace with SQLite/MongoDB for persistence across restarts.
+ * All data is lost on restart. Use the SQLite system (database.js) for persistence.
  */
 
 const store = {
@@ -41,7 +41,7 @@ function addGroup(groupId, sheetId, ownerId) {
       sheetId: sheetId || 'none',
       ownerId: ownerId ? String(ownerId) : null,
       admins: new Set(),
-      accessMode: 'all',
+      accessMode: 'all',           // 'all' | 'group' | 'whitelist'
       whitelist: new Set(),
       extraEmails: [],
       topics: {
@@ -99,6 +99,32 @@ function getGroupsForAdmin(userId) {
 }
 
 // ═══════════════════════════════════════════════
+//  WHITELIST MANAGEMENT
+// ═══════════════════════════════════════════════
+
+function addToWhitelist(groupId, userId) {
+  const g = store.groups[String(groupId)];
+  if (g) { g.whitelist.add(String(userId)); return true; }
+  return false;
+}
+
+function removeFromWhitelist(groupId, userId) {
+  const g = store.groups[String(groupId)];
+  if (g) { g.whitelist.delete(String(userId)); return true; }
+  return false;
+}
+
+function isWhitelisted(groupId, userId) {
+  const g = store.groups[String(groupId)];
+  return g?.whitelist.has(String(userId)) || false;
+}
+
+function setAccessMode(groupId, mode) {
+  const g = store.groups[String(groupId)];
+  if (g) g.accessMode = mode;
+}
+
+// ═══════════════════════════════════════════════
 //  USERS
 // ═══════════════════════════════════════════════
 
@@ -109,6 +135,7 @@ function getOrCreateUser(userId, username) {
       username: username || 'unknown',
       points: 0,
       twitter: null,
+      twitterLocked: false,        // once set, user cannot change without admin
       wallet: null,
       discord: null,
       joinedAt: new Date().toISOString(),
@@ -151,17 +178,56 @@ function setUserField(userId, field, value) {
   if (user) user[field] = value;
 }
 
+/**
+ * Check if a Twitter username is already claimed by another user.
+ * @param {string} cleanUsername - lowercase username without @
+ * @param {string|number} userId  - the current user's Telegram ID (excluded from check)
+ * @returns {object|null} conflicting user object or null
+ */
+function checkTwitterUsernameConflict(cleanUsername, userId) {
+  const uid = String(userId);
+  const found = Object.entries(store.users).find(
+    ([id, u]) => id !== uid && u.twitter === cleanUsername
+  );
+  return found ? { id: found[0], ...found[1] } : null;
+}
+
+/**
+ * Admin-only: force-set a user's Twitter handle (bypasses lock).
+ */
+function adminSetTwitter(userId, cleanUsername) {
+  const u = store.users[String(userId)];
+  if (!u) return false;
+  u.twitter = cleanUsername;
+  u.twitterLocked = true;
+  return true;
+}
+
 // ═══════════════════════════════════════════════
-//  TASKS
+//  TASKS / RAIDS
 // ═══════════════════════════════════════════════
 
 /**
- * platform: 'twitter' | 'telegram'
- * taskType: 'like' | 'retweet' | 'follow' | 'comment' | 'quote'
- *           'join' | 'react' | 'send'
+ * Create a task or raid.
+ * @param {string} groupId
+ * @param {string} title
+ * @param {string} link
+ * @param {number} reward
+ * @param {string} type            'task' | 'raid'
+ * @param {string} buttonLabel
+ * @param {string} platform        'twitter' | 'telegram'
+ * @param {string} taskType        primary task type
+ * @param {Array}  taskTypes       array of types for multi-action (or null)
+ * @param {number} minChars        min comment chars (0 = no limit)
+ * @param {number} durationMinutes raid duration in minutes (1-1440), null for tasks
  */
-function createTask(groupId, title, link, reward, type, buttonLabel, platform, taskType, taskTypes, minChars) {
+function createTask(groupId, title, link, reward, type, buttonLabel, platform, taskType, taskTypes, minChars, durationMinutes) {
   const id = ++store.taskCounter;
+  const clampedDuration = durationMinutes ? Math.min(Math.max(1, parseInt(durationMinutes) || 60), 1440) : null;
+  const expiresAt = (type === 'raid' && clampedDuration)
+    ? new Date(Date.now() + clampedDuration * 60 * 1000).toISOString()
+    : null;
+
   store.tasks[id] = {
     id,
     groupId: String(groupId),
@@ -174,6 +240,8 @@ function createTask(groupId, title, link, reward, type, buttonLabel, platform, t
     taskType: taskType || 'like',
     taskTypes: taskTypes ? JSON.stringify(taskTypes) : null,
     minChars: parseInt(minChars) || 0,
+    durationMinutes: clampedDuration,
+    expiresAt,
     active: true,
     createdAt: new Date().toISOString(),
   };
@@ -190,9 +258,16 @@ function deactivateTask(taskId) {
   return false;
 }
 
+/**
+ * Get active tasks/raids for a group, filtering out expired raids.
+ */
 function getTasksForGroup(groupId, type) {
-  return Object.values(store.tasks).filter(
-    t => t.groupId === String(groupId) && t.active && (!type || t.type === type)
+  const now = new Date().toISOString();
+  return Object.values(store.tasks).filter(t =>
+    t.groupId === String(groupId) &&
+    t.active &&
+    (!type || t.type === type) &&
+    (!t.expiresAt || t.expiresAt > now)
   );
 }
 
@@ -200,8 +275,24 @@ function getAllTasksForGroup(groupId) {
   return Object.values(store.tasks).filter(t => t.groupId === String(groupId));
 }
 
+/**
+ * Deactivate all expired raids. Called by scheduler every minute.
+ * @returns {number} count of raids deactivated
+ */
+function deactivateExpiredRaids() {
+  const now = new Date().toISOString();
+  let count = 0;
+  for (const task of Object.values(store.tasks)) {
+    if (task.active && task.type === 'raid' && task.expiresAt && task.expiresAt < now) {
+      task.active = false;
+      count++;
+    }
+  }
+  return count;
+}
+
 // ═══════════════════════════════════════════════
-//  SUBMISSIONS
+//  SUBMISSIONS  (anti-duplicate via userSubmissions map)
 // ═══════════════════════════════════════════════
 
 function createSubmission(userId, username, groupId, taskId, taskTitle, proof, points, proofType, proofFileId) {
@@ -220,6 +311,7 @@ function createSubmission(userId, username, groupId, taskId, taskTitle, proof, p
     status: 'pending',
     createdAt: new Date().toISOString(),
   };
+  // Track per-user per-task completion (groupId:taskId key)
   const key = `${groupId}:${taskId}`;
   if (!store.userSubmissions[String(userId)]) store.userSubmissions[String(userId)] = new Set();
   store.userSubmissions[String(userId)].add(key);
@@ -273,20 +365,6 @@ function isAdmin(groupId, userId) {
 }
 
 // ═══════════════════════════════════════════════
-//  ACCESS CONTROL
-// ═══════════════════════════════════════════════
-
-function addToWhitelist(groupId, userId) {
-  const g = store.groups[String(groupId)];
-  if (g) g.whitelist.add(String(userId));
-}
-
-function setAccessMode(groupId, mode) {
-  const g = store.groups[String(groupId)];
-  if (g) g.accessMode = mode;
-}
-
-// ═══════════════════════════════════════════════
 //  LEADERBOARD & STATS
 // ═══════════════════════════════════════════════
 
@@ -303,10 +381,11 @@ function getGroupStats(groupId) {
   const tasks = Object.values(store.tasks).filter(t => t.groupId === gid);
   const subs  = Object.values(store.submissions).filter(s => s.groupId === gid);
   const users = Object.values(store.users);
+  const now   = new Date().toISOString();
   return {
     activeTasks:         tasks.filter(t => t.active && t.type === 'task').length,
     totalTasks:          tasks.filter(t => t.type === 'task').length,
-    activeRaids:         tasks.filter(t => t.active && t.type === 'raid').length,
+    activeRaids:         tasks.filter(t => t.active && t.type === 'raid' && (!t.expiresAt || t.expiresAt > now)).length,
     totalRaids:          tasks.filter(t => t.type === 'raid').length,
     pendingSubmissions:  subs.filter(s => s.status === 'pending').length,
     approvedSubmissions: subs.filter(s => s.status === 'approved').length,
@@ -320,11 +399,12 @@ module.exports = {
   setAdminContext, getAdminContext, clearAdminContext,
   addGroup, removeGroup, getGroup, getAllGroups, isGroupRegistered,
   setGroupTopic, setGroupMeta, getGroupsForAdmin,
+  addToWhitelist, removeFromWhitelist, isWhitelisted, setAccessMode,
   getOrCreateUser, getUser, getAllUsers, banUser, unbanUser, addPoints,
-  createTask, getTask, setUserField, deactivateTask, getTasksForGroup, getAllTasksForGroup,
+  setUserField, checkTwitterUsernameConflict, adminSetTwitter,
+  createTask, getTask, deactivateTask, getTasksForGroup, getAllTasksForGroup, deactivateExpiredRaids,
   createSubmission, hasSubmitted, getSubmission, approveSubmission, rejectSubmission,
   getSubmissionsForGroup,
   addAdmin, removeAdmin, isAdmin,
-  addToWhitelist, setAccessMode,
   getLeaderboard, getGroupStats,
 };
