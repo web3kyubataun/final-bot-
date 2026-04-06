@@ -1,12 +1,13 @@
 /**
  * admin.js — Admin panel
- * Task creation: Platform → TaskType → Title → Link → Reward → TimeLimit(raids)
+ * Task creation: Platform → TaskType → Title → Link → Reward → TimeLimit
  *
  * Rules:
  *  - Like and Follow are solo tasks (cannot combine with others)
- *  - Retweet, Comment, Quote can be combined together
+ *  - Retweet, Comment, Quote can be combined together (multi-select)
  *  - Bot will NOT post to group unless at least one topic is configured
  *  - Raids can have a time limit (1–1440 minutes)
+ *  - Tasks can have a time limit in hours (any positive number)
  */
 const store   = require('../store');
 const sheets  = require('../services/sheets');
@@ -18,9 +19,11 @@ const {
   approvalKeyboard, adminMainKeyboard, taskDeleteKeyboard,
   topicsSetupKeyboard, groupSelectorKeyboard, cancelKeyboard,
   platformSelectKeyboard, taskTypeKeyboard, taskCardKeyboard,
+  taskTypeComboKeyboard,
 } = require('../utils/keyboard');
 
-const SOLO_TASK_TYPES = ['follow', 'like'];
+const SOLO_TASK_TYPES       = ['follow', 'like'];
+const COMBINABLE_TASK_TYPES = ['retweet', 'comment', 'quote'];
 
 const delay = ms => new Promise(r => setTimeout(r, ms));
 
@@ -71,11 +74,14 @@ async function handleAdminPanel(ctx) {
   await sendAdminPanel(ctx, resolveAdminGroup(ctx));
 }
 
-/**
- * Check if a group has topics set before posting. Returns true if safe to post.
- */
 function canPostToGroup(groupId) {
   return store.groupHasTopics(groupId);
+}
+
+/** Format combined task type labels, e.g. 'retweet,comment' → 'Retweet + Comment' */
+function formatTypeLabel(taskType) {
+  if (!taskType) return '';
+  return taskType.split(',').map(t => TASK_TYPE_LABELS[t.trim()] || t.trim()).join(' + ');
 }
 
 async function handleAdminSessionInput(ctx, next) {
@@ -89,7 +95,7 @@ async function handleAdminSessionInput(ctx, next) {
 
   if (s.step === 'task_title') {
     session.setSession(userId, { ...s, step:'task_link', title:text });
-    const typeLabel = TASK_TYPE_LABELS[s.taskType]||s.taskType;
+    const typeLabel = formatTypeLabel(s.taskType);
     return ctx.replyWithHTML(
       `Title: <b>${text}</b>\n<i>Platform: ${s.platform==='telegram'?'Telegram':'Twitter/X'} · Type: ${typeLabel}</i>\n\n` +
       `<b>Step 3 / 5</b> — Send the <b>link</b>:\n` +
@@ -106,21 +112,28 @@ async function handleAdminSessionInput(ctx, next) {
   if (s.step === 'task_reward') {
     const reward = parseInt(text);
     if (isNaN(reward)||reward<0) return ctx.reply('Enter a valid number (e.g. 100)');
+
     if (s.taskKind === 'raid') {
-      session.setSession(userId, { ...s, step:'task_timelimit', reward });
+      // Raids: time limit in minutes (1–1440)
+      session.setSession(userId, { ...s, step:'task_timelimit_minutes', reward });
       return ctx.replyWithHTML(
         `Reward: <b>${reward} pts</b> saved.\n\n<b>Step 5 / 5</b> — Set a <b>time limit</b> for this raid:\n\n` +
         `Send a number of minutes (1–1440), or type <code>none</code> for no limit.\n` +
         `<i>Example: 60 = 1 hour, 1440 = 24 hours</i>`,
         cancelKeyboard()
       );
+    } else {
+      // Tasks: time limit in hours
+      session.setSession(userId, { ...s, step:'task_timelimit_hours', reward });
+      return ctx.replyWithHTML(
+        `Reward: <b>${reward} pts</b> saved.\n\n<b>Step 5 / 5</b> — Set a <b>time limit</b> for this task:\n\n` +
+        `Send a number of hours (e.g. <code>24</code> = 1 day, <code>48</code> = 2 days), or type <code>none</code> for no limit.`,
+        cancelKeyboard()
+      );
     }
-    // Tasks (non-raid): no time limit step
-    await finalizeTaskCreation(ctx, userId, groupId, s, reward, null);
-    return;
   }
 
-  if (s.step === 'task_timelimit') {
+  if (s.step === 'task_timelimit_minutes') {
     let timeLimitMinutes = null;
     if (text.toLowerCase() !== 'none') {
       timeLimitMinutes = parseInt(text);
@@ -128,8 +141,20 @@ async function handleAdminSessionInput(ctx, next) {
         return ctx.reply('Please send a number between 1 and 1440, or type "none" for no limit.');
       }
     }
-    const reward = s.reward;
-    await finalizeTaskCreation(ctx, userId, groupId, s, reward, timeLimitMinutes);
+    await finalizeTaskCreation(ctx, userId, groupId, s, s.reward, timeLimitMinutes);
+    return;
+  }
+
+  if (s.step === 'task_timelimit_hours') {
+    let timeLimitMinutes = null;
+    if (text.toLowerCase() !== 'none') {
+      const hours = parseFloat(text);
+      if (isNaN(hours) || hours <= 0) {
+        return ctx.reply('Please send a positive number of hours (e.g. 24), or type "none" for no limit.');
+      }
+      timeLimitMinutes = Math.round(hours * 60);
+    }
+    await finalizeTaskCreation(ctx, userId, groupId, s, s.reward, timeLimitMinutes);
     return;
   }
 
@@ -224,7 +249,6 @@ async function handleAdminSessionInput(ctx, next) {
   }
 
   if (s.step === 'collect_info_question') {
-    // Admin sent the question to ask users
     session.clearSession(userId);
     const question = text;
     const users = store.getAllUsers().filter(u => !u.banned);
@@ -233,14 +257,16 @@ async function handleAdminSessionInput(ctx, next) {
     for (const u of users) {
       try {
         await ctx.telegram.sendMessage(u.id,
-          `<b>Information Request from Admin</b>\n\n${question}\n\n<i>Please reply with your answer.</i>`,
+          `<b>Information Request from Admin</b>\n\n${question}\n\n<i>Please reply with your answer below.</i>`,
           { parse_mode: 'HTML' }
         );
+        // Set session so user's next message is captured as the answer
+        session.setSession(u.id, { step: 'collect_info_answer', question, groupId, adminFlow: false });
         sent++;
       } catch {}
       await delay(50);
     }
-    await ctx.replyWithHTML(`Info request sent to <b>${sent}</b> users.\n\n<i>Replies will be collected automatically when users respond with the keyword:</i> <code>info:</code> <i>followed by their answer.</i>`);
+    await ctx.replyWithHTML(`Info request sent to <b>${sent}</b> users.\n<i>Their replies will be recorded automatically when they respond.</i>`);
     return;
   }
 
@@ -249,7 +275,7 @@ async function handleAdminSessionInput(ctx, next) {
 
 async function finalizeTaskCreation(ctx, userId, groupId, s, reward, timeLimitMinutes) {
   session.clearSession(userId);
-  const typeLabel = TASK_TYPE_LABELS[s.taskType] || s.taskType;
+  const typeLabel = formatTypeLabel(s.taskType);
   const platLabel = s.platform === 'telegram' ? 'Telegram' : 'Twitter/X';
   const btnLabel  = `${platLabel} | ${typeLabel}`;
   const task = store.createTask(
@@ -257,7 +283,17 @@ async function finalizeTaskCreation(ctx, userId, groupId, s, reward, timeLimitMi
     btnLabel, s.platform, s.taskType, timeLimitMinutes
   );
 
-  const timeLimitText = timeLimitMinutes ? `\nTime Limit: <b>${timeLimitMinutes} min</b>` : '';
+  // Display time limit as hours for tasks, minutes for raids
+  let timeLimitText = '';
+  if (timeLimitMinutes) {
+    if (s.taskKind === 'raid') {
+      timeLimitText = `\nTime Limit: <b>${timeLimitMinutes} min</b>`;
+    } else {
+      const hrs = timeLimitMinutes / 60;
+      timeLimitText = `\nTime Limit: <b>${hrs % 1 === 0 ? hrs : hrs.toFixed(1)} hr${hrs !== 1 ? 's' : ''}</b>`;
+    }
+  }
+
   const broadcastMsg =
     `<b>New ${s.taskKind === 'raid' ? 'Raid' : 'Task'}!</b>\n${'─'.repeat(28)}\n` +
     `<b>${task.title}</b>\n${platLabel} | ${typeLabel}\n` +
@@ -295,10 +331,15 @@ async function finalizeTaskCreation(ctx, userId, groupId, s, reward, timeLimitMi
     await delay(50);
   }
 
+  const timeSummary = timeLimitMinutes
+    ? (s.taskKind === 'raid'
+        ? `\nExpires in: <b>${timeLimitMinutes} minutes</b>`
+        : `\nExpires in: <b>${(timeLimitMinutes/60).toFixed(1)} hours</b>`)
+    : '';
+
   await ctx.replyWithHTML(
     `<b>${s.taskKind === 'raid' ? 'Raid' : 'Task'} created!</b>\n` +
-    `ID: <code>${task.id}</code>  |  DMs sent: <b>${dmSent}</b>` +
-    (timeLimitMinutes ? `\nExpires in: <b>${timeLimitMinutes} minutes</b>` : '')
+    `ID: <code>${task.id}</code>  |  DMs sent: <b>${dmSent}</b>${timeSummary}`
   );
   return sendAdminPanel(ctx, groupId);
 }
@@ -362,33 +403,84 @@ function register(bot) {
     const platLabel = platform==='telegram'?'Telegram':'Twitter/X';
     await ctx.replyWithHTML(
       `${platLabel} selected.\n\n<b>Step 2 / 5</b> — Select the <b>task type</b>:\n\n` +
-      (kind === 'raid'
-        ? `<i>Note: Follow and Like are solo tasks (cannot combine). Retweet, Comment, and Quote can be combined.</i>`
-        : `<i>Select one task type.</i>`),
+      `<i>Follow and Like are solo tasks. Retweet, Comment, and Quote can be combined together.</i>`,
       taskTypeKeyboard(kind, platform)
     );
   });
 
+  // First task type selected — solo goes straight to title; combinable opens combo selector
   bot.action(/^admin_tasktype_(task|raid)_(\w+)$/, async (ctx) => {
     await ctx.answerCbQuery();
     const [,kind,taskType] = ctx.match;
     const s = session.getSession(ctx.from.id);
     if (!s) return ctx.reply('Session expired. Run /admin again.');
 
-    // Validate solo constraint
     if (SOLO_TASK_TYPES.includes(taskType)) {
-      // Solo task: cannot combine — proceed directly
       session.setSession(ctx.from.id, { ...s, taskType, step:'task_title' });
       return ctx.replyWithHTML(
-        `Type: <b>${TASK_TYPE_LABELS[taskType]}</b> (solo task — cannot combine)\n\n` +
+        `Type: <b>${TASK_TYPE_LABELS[taskType]}</b> (solo task)\n\n` +
         `<b>Step 3 / 5</b> — Enter the <b>title</b>:`,
         cancelKeyboard()
       );
     }
 
+    if (COMBINABLE_TASK_TYPES.includes(taskType)) {
+      const selectedTypes = [taskType];
+      session.setSession(ctx.from.id, { ...s, selectedTypes, taskType: taskType, step:'select_combo_types' });
+      return ctx.replyWithHTML(
+        `<b>Combine Task Types</b>\n\n` +
+        `<b>${TASK_TYPE_LABELS[taskType]}</b> selected.\n\n` +
+        `You can add more types or tap <b>Done</b> to continue:`,
+        taskTypeComboKeyboard(kind, selectedTypes)
+      );
+    }
+
+    // Telegram types — no combo
     session.setSession(ctx.from.id, { ...s, taskType, step:'task_title' });
     await ctx.replyWithHTML(
       `Type: <b>${TASK_TYPE_LABELS[taskType]||taskType}</b>\n\n<b>Step 3 / 5</b> — Enter the <b>title</b>:`,
+      cancelKeyboard()
+    );
+  });
+
+  // Toggle a combinable type on/off in combo mode
+  bot.action(/^admin_combo_toggle_(task|raid)_(\w+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const [,kind,taskType] = ctx.match;
+    const s = session.getSession(ctx.from.id);
+    if (!s || s.step !== 'select_combo_types') return ctx.answerCbQuery('Session expired.');
+
+    const selectedTypes = s.selectedTypes || [];
+    const idx = selectedTypes.indexOf(taskType);
+    if (idx >= 0) {
+      selectedTypes.splice(idx, 1); // deselect
+    } else {
+      selectedTypes.push(taskType); // select
+    }
+    if (selectedTypes.length === 0) {
+      return ctx.answerCbQuery('Select at least one type.', { show_alert: true });
+    }
+    session.setSession(ctx.from.id, { ...s, selectedTypes, taskType: selectedTypes.join(',') });
+    try {
+      await ctx.editMessageText(
+        `<b>Combine Task Types</b>\n\nSelected: <b>${selectedTypes.map(t => TASK_TYPE_LABELS[t]).join(' + ')}</b>\n\nAdd more or tap <b>Done</b>:`,
+        { parse_mode: 'HTML', ...taskTypeComboKeyboard(kind, selectedTypes) }
+      );
+    } catch {}
+  });
+
+  // Confirm combo selection and move to title
+  bot.action('admin_combo_done', async (ctx) => {
+    await ctx.answerCbQuery();
+    const s = session.getSession(ctx.from.id);
+    if (!s) return ctx.reply('Session expired. Run /admin again.');
+    const selectedTypes = s.selectedTypes || [];
+    if (!selectedTypes.length) return ctx.answerCbQuery('Select at least one type.', { show_alert: true });
+    const taskType = selectedTypes.join(',');
+    const typeLabel = formatTypeLabel(taskType);
+    session.setSession(ctx.from.id, { ...s, taskType, step:'task_title' });
+    await ctx.replyWithHTML(
+      `Types: <b>${typeLabel}</b>\n\n<b>Step 3 / 5</b> — Enter the <b>title</b>:`,
       cancelKeyboard()
     );
   });
@@ -399,9 +491,13 @@ function register(bot) {
     const tasks = store.getAllTasksForGroup(groupId);
     if (!tasks.length) return ctx.replyWithHTML('<b>Tasks</b>\n\n<i>No tasks yet.</i>');
     const lines = tasks.map(t => {
-      const tl = TASK_TYPE_LABELS[t.taskType] || t.taskType || '—';
+      const tl = formatTypeLabel(t.taskType) || '—';
       const pe = t.platform === 'telegram' ? 'Telegram' : 'Twitter';
-      const exp = t.expiresAt ? ` | Expires: ${new Date(t.expiresAt).toLocaleTimeString()}` : '';
+      let exp = '';
+      if (t.expiresAt) {
+        const hrs = ((new Date(t.expiresAt) - Date.now()) / 3600000).toFixed(1);
+        exp = ` | Expires in: ${hrs > 0 ? `${hrs}h` : 'expired'}`;
+      }
       return `${t.active ? 'Active' : 'Inactive'} [<code>${t.id}</code>] ${t.type === 'raid' ? 'RAID' : 'TASK'} <b>${t.title}</b>\n   ${pe} | ${tl} — ${t.reward}pts${exp}`;
     }).join('\n\n');
     await ctx.replyWithHTML(`<b>All Tasks</b>\n${'─'.repeat(28)}\n\n${lines}`);
@@ -440,8 +536,9 @@ function register(bot) {
     await ctx.answerCbQuery();
     startFlow(ctx, { step:'collect_info_question' },
       `<b>Collect Info from Users</b>\n\n` +
-      `Send the question or message you want to broadcast to all users to collect information.\n\n` +
-      `<i>Example: Please share your email address for our records.</i>`
+      `Send the question or message you want to broadcast to all users.\n\n` +
+      `<i>Example: Please share your email address for our records.</i>\n\n` +
+      `<b>Users will receive your question and just need to reply to the bot — their answer is recorded automatically in Sheets.</b>`
     );
   });
 
