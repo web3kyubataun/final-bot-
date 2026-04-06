@@ -14,7 +14,7 @@ function formatRaidMessage(raid, tasks) {
     `  ${i + 1}\\. ${escapeMarkdown(formatTaskLabel(t))}`
   ).join('\n');
 
-  let msg = `🚨 *New Raid*\n`;
+  let msg = ` *New Raid*\n`;
   msg += divider();
   msg += `*Task:* ${escapeMarkdown(raid.title)}\n`;
   if (raid.link) msg += `*Link:* ${escapeMarkdown(raid.link)}\n`;
@@ -70,16 +70,16 @@ function formatTaskInstruction(task, index) {
 function formatLeaderboard(entries, groupName) {
   if (!entries || entries.length === 0) {
     return (
-      `🏆 *Leaderboard*\n` +
+      ` *Leaderboard*\n` +
       `_${escapeMarkdown(groupName || 'Group')}_` +
       divider() +
       `_No entries yet\\. Complete raids to earn points\\._`
     );
   }
   const rankLabel = (i) => {
-    if (i === 0) return '🥇';
-    if (i === 1) return '🥈';
-    if (i === 2) return '🥉';
+    if (i === 0) return '';
+    if (i === 1) return '';
+    if (i === 2) return '';
     return `${i + 1}\\.`;
   };
   const rows = entries.map((e, i) => {
@@ -87,7 +87,7 @@ function formatLeaderboard(entries, groupName) {
     return `${rankLabel(i)} ${escapeMarkdown(name)} — *${escapeMarkdown(String(e.points))} pts*`;
   });
   return (
-    `🏆 *Leaderboard*\n` +
+    ` *Leaderboard*\n` +
     `_${escapeMarkdown(groupName || 'Group')}_` +
     divider() +
     rows.join('\n')
@@ -98,7 +98,7 @@ function formatLeaderboard(entries, groupName) {
 function formatActiveRaids(raids, groupName) {
   if (!raids || raids.length === 0) {
     return (
-      `📋 *Active Raids*\n` +
+      ` *Active Raids*\n` +
       `_${escapeMarkdown(groupName || 'Group')}_` +
       divider() +
       `_No active raids at the moment\\._`
@@ -110,7 +110,7 @@ function formatActiveRaids(raids, groupName) {
     `   Tasks: _${escapeMarkdown(String(r.task_count || 0))}_`
   );
   return (
-    `📋 *Active Raids*\n` +
+    ` *Active Raids*\n` +
     `_${escapeMarkdown(groupName || 'Group')}_` +
     divider() +
     rows.join('\n\n')
@@ -120,7 +120,7 @@ function formatActiveRaids(raids, groupName) {
 // ── Verification results ──────────────────────────────────────────────────────
 function formatVerificationFailed(taskLabel, reason) {
   return (
-    `❌ *Verification Failed*\n` +
+    ` *Verification Failed*\n` +
     `_${escapeMarkdown(taskLabel)}_` +
     `\n\n` +
     `${escapeMarkdown(reason || 'Could not verify this task\\. Please try again\\.')}`
@@ -129,7 +129,7 @@ function formatVerificationFailed(taskLabel, reason) {
 
 function formatVerificationSuccess(taskLabel) {
   return (
-    `✅ *Task Verified*\n` +
+    ` *Task Verified*\n` +
     `_${escapeMarkdown(taskLabel)}_` +
     `\n\nVerified successfully\\.`
   );
@@ -137,7 +137,7 @@ function formatVerificationSuccess(taskLabel) {
 
 function formatRaidComplete(raid, reward) {
   return (
-    `🎉 *Raid Complete\\!*` +
+    ` *Raid Complete\\!*` +
     divider() +
     `*${escapeMarkdown(raid.title)}*\n\n` +
     `*Points Earned:* ${escapeMarkdown(String(reward))} pts\n\n` +

@@ -44,7 +44,7 @@ async function handleTaskVerify(ctx, taskId) {
   if (!raid || raid.status !== 'active') return ctx.answerCbQuery('This raid is no longer active.');
 
   const existing = db.getUserTaskSubmission(user.id, taskId);
-  if (existing && existing.status === 'verified') return ctx.answerCbQuery('You have already completed this task. ✅');
+  if (existing && existing.status === 'verified') return ctx.answerCbQuery('You have already completed this task. ');
 
   await ctx.answerCbQuery();
 
@@ -163,7 +163,7 @@ async function handleVerifyButton(ctx, taskId) {
   if (!raid || raid.status !== 'active') return ctx.answerCbQuery('Raid no longer active.');
 
   const existing = db.getUserTaskSubmission(user.id, taskId);
-  if (existing && existing.status === 'verified') return ctx.answerCbQuery('Already verified. ✅');
+  if (existing && existing.status === 'verified') return ctx.answerCbQuery('Already verified. ');
 
   if (!user.twitter_username) return ctx.answerCbQuery('Link your Twitter account first.');
 
@@ -250,7 +250,7 @@ async function handleTwitterUsernameInput(ctx) {
   db.setUserTwitterUsername(userId, clean);
 
   await ctx.reply(
-    `✅ *Twitter Linked*\n\n_Account set to_ \`@${escapeMarkdown(clean)}\`\n\n_Now verifying your task\\.\\.\\._`,
+    ` *Twitter Linked*\n\n_Account set to_ \`@${escapeMarkdown(clean)}\`\n\n_Now verifying your task\\.\\.\\._`,
     { parse_mode: 'MarkdownV2' }
   );
 
@@ -305,7 +305,7 @@ async function handleTelegramJoinVerify(ctx, taskId) {
   if (!raid || raid.status !== 'active') return ctx.answerCbQuery('Raid no longer active.');
 
   const existing = db.getUserTaskSubmission(user.id, taskId);
-  if (existing?.status === 'verified') return ctx.answerCbQuery('Already verified! ✅');
+  if (existing?.status === 'verified') return ctx.answerCbQuery('Already verified! ');
 
   await ctx.answerCbQuery('Verifying…');
 
@@ -315,7 +315,7 @@ async function handleTelegramJoinVerify(ctx, taskId) {
   if (!channelId) {
     await ctx.telegram.sendMessage(
       userId,
-      `⚠️ _No channel configured for this task\\. Contact an admin\\._`,
+      ` _No channel configured for this task\\. Contact an admin\\._`,
       { parse_mode: 'MarkdownV2' }
     );
     return;
@@ -338,7 +338,7 @@ async function handleTelegramJoinVerify(ctx, taskId) {
     } else {
       await ctx.telegram.sendMessage(
         userId,
-        `❌ *Not a Member*\n\n_Join the channel/group first, then tap Verify again\\._`,
+        ` *Not a Member*\n\n_Join the channel/group first, then tap Verify again\\._`,
         { parse_mode: 'MarkdownV2', reply_markup: telegramTaskActionKeyboard(task) }
       );
     }
@@ -359,7 +359,7 @@ async function handleTelegramJoinVerify(ctx, taskId) {
       db.upsertTaskSubmission(user.id, taskId, raid.id, 'verified', null);
       await ctx.telegram.sendMessage(
         userId,
-        `✅ *Join Noted*\n\n_Marked as done\\. Bot cannot verify private channels automatically\\._`,
+        ` *Join Noted*\n\n_Marked as done\\. Bot cannot verify private channels automatically\\._`,
         { parse_mode: 'MarkdownV2' }
       );
       await checkAndAwardRaid(ctx.telegram, userId, user, raid);
@@ -392,7 +392,7 @@ async function handleTelegramTaskDone(ctx, taskId) {
   if (!raid || raid.status !== 'active') return ctx.answerCbQuery('Raid no longer active.');
 
   const existing = db.getUserTaskSubmission(user.id, taskId);
-  if (existing?.status === 'verified') return ctx.answerCbQuery('Already done! ✅');
+  if (existing?.status === 'verified') return ctx.answerCbQuery('Already done! ');
 
   await ctx.answerCbQuery();
 
@@ -441,7 +441,7 @@ async function checkAndAwardRaid(telegram, dmChatId, user, raid) {
     // Show progress — updated task list
     await telegram.sendMessage(
       dmChatId,
-      `✅ *Task done\\!* _${doneIds.length} of ${tasks.length} complete\\._\n\n_Complete all tasks to earn your reward\\._`,
+      ` *Task done\\!* _${doneIds.length} of ${tasks.length} complete\\._\n\n_Complete all tasks to earn your reward\\._`,
       { parse_mode: 'MarkdownV2', reply_markup: raidTaskKeyboard(tasks, doneIds) }
     );
     return;

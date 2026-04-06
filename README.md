@@ -11,7 +11,7 @@ Multi-group support, forum topic routing, RoseBot-style admin panel, Google Shee
 - **Forum Topics** — auto-create or manually assign channels for raids, tasks, notifications, leaderboard, etc.
 - **Task & Raid system** — create campaigns with inline buttons and proof submission
 - **Google Sheets** — auto-creates a sheet per group, logs submissions + user data
-- **Approval workflow** — admins get DM notifications with ✅ Approve / ❌ Reject buttons
+- **Approval workflow** — admins get DM notifications with  Approve /  Reject buttons
 - **RoseBot-style admin panel** — full inline keyboard panel with sections
 - **Leaderboard** — points-based ranking with visual bar chart
 - **Access control** — all users / group members only / whitelist modes
@@ -71,13 +71,13 @@ npx nodemon src/index.js
 4. **Follow `/setup`** — step-by-step guide inside the group
 5. **Enable Forum Topics** (optional) — Group Settings → Topics → Enable → run `/autotopics`
 6. **Add admins** — `/addadmin <userId>` in the group
-7. **Create tasks** — use the admin panel `📝 Create Task` button
+7. **Create tasks** — use the admin panel ` Create Task` button
 
 ---
 
 ## Commands Reference
 
-### 👑 Owner Commands (you only)
+###  Owner Commands (you only)
 
 | Command | Description |
 |---------|-------------|
@@ -87,7 +87,7 @@ npx nodemon src/index.js
 | `/broadcast <message>` | DM all bot users |
 | `/ownerhelp` | Show all owner commands |
 
-### 🛠️ Admin Commands
+###  Admin Commands
 
 | Command | Description |
 |---------|-------------|
@@ -103,22 +103,22 @@ npx nodemon src/index.js
 | `/removeadmin <userId>` | Remove a group admin |
 
 **Admin Panel Sections** (all via `/admin` inline buttons):
-- 📋 **Campaigns** — Create Task, Create Raid, View Tasks, Delete Task
-- 📬 **Submissions** — View Pending / Approved / Rejected
-- 📢 **Broadcast** — Announce to group, DM all users
-- 👤 **Users** — View users, Ban, Unban, Add/Remove admins
-- 🔐 **Access Control** — All / Group Only / Whitelist
-- ⚙️ **Setup** — Set topics, Add email, Group stats, Set group link
+-  **Campaigns** — Create Task, Create Raid, View Tasks, Delete Task
+-  **Submissions** — View Pending / Approved / Rejected
+-  **Broadcast** — Announce to group, DM all users
+-  **Users** — View users, Ban, Unban, Add/Remove admins
+-  **Access Control** — All / Group Only / Whitelist
+-  **Setup** — Set topics, Add email, Group stats, Set group link
 
-### 👤 User Commands
+###  User Commands
 
 All user interaction is through the bottom keyboard menu:
-- 🎯 **Tasks** — View and submit tasks
-- ⚡ **Raids** — View and join raids
-- 🏆 **Leaderboard** — Top earners
-- 👤 **My Profile** — Stats, points, rank
-- ⚙️ **Settings** — Twitter, Wallet, Discord, Notifications
-- ❓ **Help** — How to use the bot
+-  **Tasks** — View and submit tasks
+-  **Raids** — View and join raids
+-  **Leaderboard** — Top earners
+-  **My Profile** — Stats, points, rank
+-  **Settings** — Twitter, Wallet, Discord, Notifications
+-  **Help** — How to use the bot
 
 ---
 
@@ -128,15 +128,15 @@ When you run `/autotopics` or `/settopic`, these types are available:
 
 | Type | Topic Name | Purpose |
 |------|-----------|---------|
-| `getstarted` | 🚀 Get Started | Onboarding, `/postwelcome` posts here |
-| `notifications` | 🔔 Notifications | New task/raid alerts |
-| `quests` | 🎯 Quests | Active task cards |
-| `raids` | ⚡ Raids | Active raid cards |
-| `leaderboard` | 🏆 Leaderboard | Leaderboard posts |
-| `connect` | 🐦 Connect Twitter | Twitter linking |
-| `announcements` | 📢 Announcements | Admin broadcasts |
-| `submissions` | 📋 Submissions | Submission review |
-| `general` | 💬 General | General chat |
+| `getstarted` |  Get Started | Onboarding, `/postwelcome` posts here |
+| `notifications` |  Notifications | New task/raid alerts |
+| `quests` |  Quests | Active task cards |
+| `raids` |  Raids | Active raid cards |
+| `leaderboard` |  Leaderboard | Leaderboard posts |
+| `connect` |  Connect Twitter | Twitter linking |
+| `announcements` |  Announcements | Admin broadcasts |
+| `submissions` |  Submissions | Submission review |
+| `general` |  General | General chat |
 
 To manually set a topic: `/settopic notifications 12345`
 *(Get the ID: right-click the topic → Copy Link → number at the end)*

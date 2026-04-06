@@ -6,7 +6,7 @@
 OUTPUT="telegram-premium-bot.tar.gz"
 PARENT_DIR=$(dirname "$0")
 
-echo "📦 Creating archive: $OUTPUT ..."
+echo " Creating archive: $OUTPUT ..."
 
 cd "$PARENT_DIR/.." || exit 1
 
@@ -20,5 +20,5 @@ tar \
   -czf "$OUTPUT" tgbot
 
 echo ""
-echo "✅ Done! File created: $OUTPUT"
+echo " Done! File created: $OUTPUT"
 ls -lh "$OUTPUT"

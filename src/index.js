@@ -1,115 +1,87 @@
-const express = require('express');
+require('dotenv').config();
 const { Telegraf } = require('telegraf');
-
-const config = require('./config');
-const botInfo = require('./botInfo');
-const { userMiddleware } = require('./middleware/auth');
-const { startScheduler } = require('./scheduler');
-const { setBotInstance } = require('./oauth/twitterOAuth');
-const { cleanOldStates } = require('./db/sqlite');
-const authCallback = require('./routes/authCallback');
+const config    = require('./config');
+const botInfo   = require('./botInfo');
+const { userMiddleware, isOwner } = require('./middleware/auth');
 
 const ownerHandler = require('./handlers/owner');
 const groupHandler = require('./handlers/group');
 const adminHandler = require('./handlers/admin');
-const userHandler = require('./handlers/user');
-
-// ── Validate required env vars ─────────────────────────────────────────────
+const userHandler  = require('./handlers/user');
 
 if (!config.BOT_TOKEN) {
- console.error('[Fatal] BOT_TOKEN is missing.');
- process.exit(1);
+  console.error(' BOT_TOKEN is missing from .env');
+  process.exit(1);
 }
 if (!config.OWNER_IDS.length) {
- console.error('[Fatal] BOT_OWNER_IDS is missing. Set at least one owner Telegram ID.');
- process.exit(1);
+  console.error(' BOT_OWNER_IDS (or BOT_OWNER_ID) is missing from .env');
+  process.exit(1);
 }
-
-// ── Express HTTP server ────────────────────────────────────────────────────
-
-const app = express();
-
-app.get('/health', (_, res) => res.json({ status: 'ok', uptime: process.uptime() }));
-app.use(authCallback);
-app.use((_, res) => res.status(404).send('Not found'));
-
-const PORT = config.PORT;
-app.listen(PORT, '0.0.0.0', () => {
- console.log(`[HTTP] Express listening on port ${PORT}`);
-});
-
-// ── Bot setup ──────────────────────────────────────────────────────────────
 
 const bot = new Telegraf(config.BOT_TOKEN);
 
+// ── Request logger ──────────────────────────────────────
 bot.use(async (ctx, next) => {
- if (ctx.from) {
- const who = ctx.from.username ?`@${ctx.from.username}` :`id:${ctx.from.id}`;
- const what = ctx.message?.text?.slice(0, 80) || ctx.callbackQuery?.data || ctx.updateType;
- console.log(`[${new Date().toISOString().slice(0, 19)}] ${who} → ${what}`);
- }
- return next();
+  if (ctx.from) {
+    const who  = ctx.from.username ? `@${ctx.from.username}` : `id:${ctx.from.id}`;
+    const what = ctx.message?.text?.slice(0, 50) || ctx.callbackQuery?.data || ctx.updateType;
+    console.log(`[${new Date().toISOString().slice(0, 19)}] ${who} → ${what}`);
+  }
+  return next();
 });
 
+// ── User registration & ban check ───────────────────────
 bot.use(userMiddleware);
 
-// Handler registration order: admin session runs before user session
+// ── Handler registration (ORDER MATTERS) ───────────────
+// 1. Admin session handler + admin panel (before user session)
 adminHandler.register(bot);
+
+// 2. Owner-only commands
 ownerHandler.register(bot);
+
+// 3. Group setup commands
 groupHandler.register(bot);
+
+// 4. User commands + session (last — catches remaining input)
 userHandler.register(bot);
 
-// Catch-all for unknown commands (DM only)
+// ── Invalid command handler (private chat) ───────────────
 bot.on('message', async (ctx) => {
- if (ctx.chat?.type !== 'private') return;
- const text = ctx.message?.text;
- if (!text || !text.startsWith('/')) return;
- await ctx.replyWithHTML(
-`<b>Unknown command</b>: <code>${text.split(' ')[0]}</code>\n\nUse /help to see what's available.`
- );
+  if (ctx.chat?.type !== 'private') return;
+  const text = ctx.message?.text;
+  if (!text) return;
+
+  if (text.startsWith('/')) {
+    // Unknown command
+    await ctx.replyWithHTML(
+      ` <b>Unknown command</b>: <code>${text.split(' ')[0]}</code>\n\n` +
+      `Use /help to see what's available.`
+    );
+  }
+  // Non-command stray text in DM — ignore silently (session handler already handled it)
 });
 
+// ── Error handler ────────────────────────────────────────
 bot.catch((err, ctx) => {
- if (err?.response?.error_code === 403) return;
- if (err?.response?.error_code === 400 && err?.message?.includes('message is not modified')) return;
- console.error(`[Bot Error] [${ctx?.updateType}] ${err.message}`);
- ctx?.reply?.('An error occurred. Please try again.').catch(() => {});
+  if (err?.response?.error_code === 403) return; // user blocked bot
+  if (err?.response?.error_code === 400 && err?.message?.includes('message is not modified')) return;
+  console.error(` [${ctx.updateType}] ${err.message}`);
+  ctx.reply(' An error occurred. Please try again.').catch(() => {});
 });
 
-// ── Launch with retry (handles 409 on rolling deploys) ────────────────────
+// ── Launch ───────────────────────────────────────────────
+bot.launch()
+  .then(async () => {
+    const me = await bot.telegram.getMe();
+    botInfo.setBotUsername(me.username);
+    console.log(` @${me.username} is running (polling)`);
+    console.log(` Owners: ${config.OWNER_IDS.join(', ')}`);
+  })
+  .catch(err => {
+    console.error(' Failed to launch:', err.message);
+    process.exit(1);
+  });
 
-async function launchBot(attempt = 1) {
- try {
- await bot.telegram.deleteWebhook({ drop_pending_updates: false });
- console.log('[Bot] Webhook cleared.');
- } catch (e) {
- console.warn('[Bot] Could not clear webhook:', e.message);
- }
-
- try {
- await bot.launch();
- const me = await bot.telegram.getMe();
- botInfo.setBotUsername(me.username);
- setBotInstance(bot);
- console.log(`[Bot] @${me.username} is online`);
- console.log(`[Bot] Owners: ${config.OWNER_IDS.join(', ')}`);
- startScheduler(bot.telegram);
-
- // Clean expired OAuth states hourly
- setInterval(() => cleanOldStates(), 60 * 60 * 1000);
- } catch (err) {
- console.error(`[Bot] Launch failed (attempt ${attempt}): ${err.message}`);
- if (attempt < 12) {
- const wait = Math.min(attempt * 5000, 30000);
- console.log(`[Bot] Retrying in ${wait / 1000}s…`);
- setTimeout(() => launchBot(attempt + 1), wait);
- } else {
- console.error('[Bot] Max retries reached. HTTP server still running.');
- }
- }
-}
-
-launchBot();
-
-process.once('SIGINT', () => { bot.stop('SIGINT'); process.exit(0); });
-process.once('SIGTERM', () => { bot.stop('SIGTERM'); process.exit(0); });
+process.once('SIGINT',  () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));

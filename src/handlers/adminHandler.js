@@ -542,7 +542,7 @@ async function finalizeRaidAndPublish(telegram, userId, data, chosenTaskTypes, f
 
   await telegram.sendMessage(
     userId,
-    `✅ *Raid Published*\n\n*Title:* ${escapeMarkdown(data.title)}\n*Platform:* ${escapeMarkdown(platform === 'twitter' ? 'Twitter/X' : 'Telegram')}\n*Tasks:* ${escapeMarkdown(taskSummary)}\n*Reward:* ${data.reward} pts\n\n_The raid has been posted to the group\\._`,
+    ` *Raid Published*\n\n*Title:* ${escapeMarkdown(data.title)}\n*Platform:* ${escapeMarkdown(platform === 'twitter' ? 'Twitter/X' : 'Telegram')}\n*Tasks:* ${escapeMarkdown(taskSummary)}\n*Reward:* ${data.reward} pts\n\n_The raid has been posted to the group\\._`,
     { parse_mode: 'MarkdownV2' }
   );
 }
