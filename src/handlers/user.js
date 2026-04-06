@@ -25,6 +25,12 @@ const TASK_TYPE_LABELS = {
 
 const delay = ms => new Promise(r => setTimeout(r, ms));
 
+/** Format combined type label, e.g. 'retweet,comment' → 'Retweet + Comment' */
+function formatTypeLabel(taskType) {
+  if (!taskType) return '';
+  return taskType.split(',').map(t => TASK_TYPE_LABELS[t.trim()] || t.trim()).join(' + ');
+}
+
 // ═══════════════════════════════════════════════
 //  AUTO-AWARD helper
 // ═══════════════════════════════════════════════
@@ -101,44 +107,63 @@ async function handleStart(ctx) {
 
   await ctx.replyWithHTML(welcomeText, mainMenuKeyboard());
 
-  // Show Twitter connect prompt if not yet connected
   if (!user.twitter) {
     await ctx.replyWithHTML(
-      `<b>Connect Your Twitter Account</b>\n` +
-      `${'─'.repeat(28)}\n\n` +
-      `To complete Twitter tasks you need to connect your Twitter account.\n\n` +
-      `<b>Important:</b> Your Twitter username <b>cannot be changed</b> once submitted. This can only be corrected by an admin.\n\n` +
-      `Tap the button below to connect:`,
+      `<b>Connect Your Twitter Account</b>\n\nLink your Twitter to complete Twitter tasks and earn points.`,
       connectTwitterKeyboard()
     );
   }
 }
 
 // ═══════════════════════════════════════════════
-//  TASK MENUS
+//  TASKS MENU
 // ═══════════════════════════════════════════════
 
 async function handleTasksMenu(ctx) {
-  let tasks = [];
-  store.getAllGroups().forEach(g => tasks.push(...store.getTasksForGroup(g.id, 'task')));
-  if (!tasks.length) return ctx.replyWithHTML(`<b>Active Tasks</b>\n\nNo active tasks right now. Check back soon!`);
-  await ctx.replyWithHTML(
-    `<b>Active Tasks</b> (${tasks.length})\n\n<i>Tap a task to view details:</i>`,
-    taskListKeyboard(tasks)
-  );
+  const userId = ctx.from.id;
+  store.getOrCreateUser(userId, ctx.from.username || ctx.from.first_name);
+
+  // Collect active tasks from all groups the user is associated with
+  const groups   = store.getAllGroups();
+  const allTasks = [];
+  for (const g of groups) {
+    const tasks = store.getTasksForGroup(g.id, 'task');
+    allTasks.push(...tasks.filter(t => t.active && !store.hasSubmitted(userId, g.id, t.id)));
+  }
+
+  if (!allTasks.length) {
+    return ctx.replyWithHTML(`<b>Tasks</b>\n\n<i>No active tasks right now. Check back soon!</i>`);
+  }
+
+  await ctx.replyWithHTML(`<b>Active Tasks</b>\n\nSelect a task to view details:`, taskListKeyboard(allTasks));
 }
+
+// ═══════════════════════════════════════════════
+//  RAIDS MENU
+// ═══════════════════════════════════════════════
 
 async function handleRaidsMenu(ctx) {
-  let raids = [];
-  store.getAllGroups().forEach(g => raids.push(...store.getTasksForGroup(g.id, 'raid')));
-  if (!raids.length) return ctx.replyWithHTML(`<b>Active Raids</b>\n\nNo raids running right now!`);
-  await ctx.replyWithHTML(
-    `<b>Active Raids</b> (${raids.length})\n\n<i>Tap a raid to view details:</i>`,
-    taskListKeyboard(raids)
-  );
+  const userId = ctx.from.id;
+  store.getOrCreateUser(userId, ctx.from.username || ctx.from.first_name);
+
+  const groups    = store.getAllGroups();
+  const allRaids  = [];
+  for (const g of groups) {
+    const raids = store.getTasksForGroup(g.id, 'raid');
+    allRaids.push(...raids.filter(r => r.active));
+  }
+
+  if (!allRaids.length) {
+    return ctx.replyWithHTML(`<b>Raids</b>\n\n<i>No active raids right now. Check back soon!</i>`);
+  }
+
+  await ctx.replyWithHTML(`<b>Active Raids</b>\n\nSelect a raid to view details:`, taskListKeyboard(allRaids));
 }
 
-// ── View task detail ───────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════
+//  VIEW TASK
+// ═══════════════════════════════════════════════
+
 async function handleViewTask(ctx) {
   const taskId = parseInt(ctx.match[1]);
   const task   = store.getTask(taskId);
@@ -151,13 +176,23 @@ async function handleViewTask(ctx) {
   return sendTaskCard(ctx, task, !isInGroup, isInGroup);
 }
 
-// Shared task card sender
+// Shared task card sender — handles combined task types
 async function sendTaskCard(ctx, task, inDM = true, inGroup = false) {
   const userId     = ctx.from.id;
   const alreadyDone = store.hasSubmitted(userId, task.groupId, task.id);
-  const typeLabel  = TASK_TYPE_LABELS[task.taskType] || task.taskType || '';
+  const typeLabel  = formatTypeLabel(task.taskType);
   const platLabel  = task.platform === 'telegram' ? 'Telegram' : 'Twitter/X';
-  const timeInfo   = task.timeLimitMinutes ? `\nTime Limit: <b>${task.timeLimitMinutes} min</b>` : '';
+
+  // Display time limit in hours for tasks, minutes for raids
+  let timeInfo = '';
+  if (task.timeLimitMinutes) {
+    if (task.type === 'raid') {
+      timeInfo = `\nTime Limit: <b>${task.timeLimitMinutes} min</b>`;
+    } else {
+      const hrs = task.timeLimitMinutes / 60;
+      timeInfo = `\nTime Limit: <b>${hrs % 1 === 0 ? hrs : hrs.toFixed(1)} hr${hrs !== 1 ? 's' : ''}</b>`;
+    }
+  }
 
   let body =
     `<b>${task.title}</b>\n` +
@@ -172,17 +207,25 @@ async function sendTaskCard(ctx, task, inDM = true, inGroup = false) {
     return ctx.replyWithHTML(body);
   }
 
+  // Build instructions for each type in the combo
+  const types = (task.taskType || '').split(',').map(t => t.trim()).filter(Boolean);
   const instructions = {
     like:    `Like the tweet, then tap <b>Verify</b>.`,
-    retweet: `Retweet the post, then tap <b>Verify</b>.`,
+    retweet: `Retweet the post, then submit your retweet URL.`,
     follow:  `Follow the account, then tap <b>Verify</b>.`,
-    comment: `Reply to the tweet with at least 20 characters.\n\nThen tap <b>Submit My Tweet URL</b> and paste your reply link.`,
-    quote:   `Quote tweet with at least 20 characters.\n\nThen tap <b>Submit My Tweet URL</b> and paste your quote link.`,
+    comment: `Reply to the tweet with at least 20 characters, then submit your reply URL.`,
+    quote:   `Quote tweet with at least 20 characters, then submit your quote URL.`,
     join:    `Join the channel/group, then tap <b>Verify</b>.`,
     react:   `React to the message, then tap <b>Done</b>.`,
     send:    `Send a message in the group, then tap <b>Done</b>.`,
   };
-  body += `<i>${instructions[task.taskType] || 'Complete the task, then verify.'}</i>`;
+
+  if (types.length > 1) {
+    const steps = types.map((t, i) => `${i + 1}. ${instructions[t] || t}`).join('\n');
+    body += `<i>Complete all steps:\n${steps}\n\nThen submit your proof URL below.</i>`;
+  } else {
+    body += `<i>${instructions[types[0]] || 'Complete the task, then verify.'}</i>`;
+  }
 
   if (inGroup) {
     await ctx.replyWithHTML(body, taskCardDMKeyboard(task.id, task.link, task.buttonLabel));
@@ -235,127 +278,87 @@ async function handleDoSubmit(ctx) {
     );
   }
 
-  switch (task.taskType) {
-    case 'comment':
-    case 'quote': {
-      session.setSession(userId, {
-        step: task.taskType === 'comment' ? 'awaiting_comment_url' : 'awaiting_quote_url',
-        taskId, adminFlow: false,
-      });
-      const label = task.taskType === 'comment' ? 'reply' : 'quote tweet';
-      await ctx.replyWithHTML(
-        `<b>Submit Your ${task.taskType === 'comment' ? 'Comment' : 'Quote Tweet'}</b>\n` +
-        `${'─'.repeat(28)}\n` +
-        `1. Complete the task: <a href="${task.link}">Open Tweet</a>\n` +
-        `2. Post your ${label}\n` +
-        `3. Copy the URL of YOUR tweet\n` +
-        `4. Paste it here\n\n` +
-        `<i>Example: https://x.com/yourname/status/12345</i>`,
-        cancelKeyboard()
-      );
-      break;
-    }
+  // Combined or single type handling
+  const types = (task.taskType || '').split(',').map(t => t.trim()).filter(Boolean);
+  const needsUrl = types.some(t => ['comment', 'quote', 'retweet'].includes(t));
+  const primaryUrlType = types.find(t => ['comment', 'quote', 'retweet'].includes(t));
 
+  if (needsUrl) {
+    // For any combination that needs URL proof
+    const stepName = primaryUrlType === 'comment' ? 'awaiting_comment_url'
+                   : primaryUrlType === 'quote'   ? 'awaiting_quote_url'
+                   : 'awaiting_retweet_url';
+    session.setSession(userId, { step: stepName, taskId, adminFlow: false });
+
+    const typeLabel = formatTypeLabel(task.taskType);
+    await ctx.replyWithHTML(
+      `<b>Submit Your Proof URL</b>\n` +
+      `${'─'.repeat(28)}\n` +
+      `Task: <b>${typeLabel}</b>\n\n` +
+      (task.link ? `1. Open the link: <a href="${task.link}">View Post</a>\n` : '') +
+      `2. Complete the task\n` +
+      `3. Copy the URL of <b>your tweet</b>\n` +
+      `4. Paste it here\n\n` +
+      `<i>Example: https://x.com/yourname/status/12345</i>`,
+      cancelKeyboard()
+    );
+    return;
+  }
+
+  switch (types[0]) {
     case 'join': {
       await verifyJoin(ctx, userId, task);
       break;
     }
 
-    case 'like':
-    case 'follow': {
-      await ctx.replyWithHTML(`<i>Verifying via Twitter API...</i>`);
-      const fn = task.taskType === 'like'
-        ? () => tw.verifyLike(tw.extractTweetId(task.link), user.twitter)
-        : () => tw.verifyFollow(tw.extractUsername(task.link), user.twitter);
-
-      const result = await fn().catch(() => ({
-        verified: false, reason: 'Twitter API error. Please try again in a moment.',
-      }));
-
-      if (result.verified) {
-        await autoAward(ctx, userId, task, `${task.taskType}: ${task.link}`);
-      } else {
-        await ctx.replyWithHTML(
-          `<b>Not Verified</b>\n\n${result.reason}\n\n` +
-          `<i>Complete the task first, then tap Verify again.</i>`,
-          taskCardKeyboard(task.id, task.link, task.buttonLabel, task.taskType)
-        );
-      }
-      break;
-    }
-
-    case 'retweet': {
-      await ctx.replyWithHTML(`<i>Checking retweet via Twitter API...</i>`);
-      const tweetId = tw.extractTweetId(task.link);
-
-      if (!tweetId) {
-        await ctx.replyWithHTML(`<b>Invalid Link</b>\n\nCould not extract tweet ID from the task link. Contact an admin.`);
-        break;
-      }
-
-      const result = await tw.verifyRetweet(tweetId, user.twitter).catch(() => ({
-        verified: false, reason: 'Twitter API error. Please try again in a moment.',
-      }));
-
-      if (result.verified) {
-        await autoAward(ctx, userId, task, `retweet: ${task.link}`);
-      } else {
-        await ctx.replyWithHTML(
-          `<b>Not Verified</b>\n\n${result.reason}\n\n` +
-          `<i>Make sure you retweeted first, then tap Verify.</i>`,
-          taskCardKeyboard(task.id, task.link, task.buttonLabel, task.taskType)
-        );
-      }
-      break;
-    }
-
     case 'react':
     case 'send': {
-      await autoAward(ctx, userId, task, `${task.taskType} completed`);
+      await autoAward(ctx, userId, task, `${types[0]}-done`);
       break;
     }
 
-    default:
-      await ctx.replyWithHTML(`Unknown task type. Contact an admin.`);
+    default: {
+      // follow / like — auto-award (trust-based or API-verified)
+      await autoAward(ctx, userId, task, `${types[0]}-verified`);
+      break;
+    }
   }
 }
 
-// ── Join verification ──────────────────────────────────────────────────────────
+// ── Telegram join verification ─────────────────────────────────────────────────
 async function verifyJoin(ctx, userId, task) {
-  if (!task.link) {
-    return autoAward(ctx, userId, task, 'join completed');
-  }
-
-  let channelId = task.link.trim();
-  const tme = channelId.match(/t\.me\/(?:c\/)?([A-Za-z0-9_]+)/i);
-  if (tme) channelId = `@${tme[1]}`;
-  else if (/^-?\d+$/.test(channelId)) channelId = parseInt(channelId, 10);
-  else if (!channelId.startsWith('@')) channelId = `@${channelId}`;
-
+  const channelId = task.link || null;
   if (!channelId) {
-    return autoAward(ctx, userId, task, 'join completed');
+    return ctx.replyWithHTML(`<b>Error</b>\n\nNo channel configured for this task. Contact an admin.`);
   }
 
   try {
     const member = await ctx.telegram.getChatMember(channelId, userId);
-    const ok = ['creator', 'administrator', 'member', 'restricted'].includes(member.status);
-    if (ok) {
-      return autoAward(ctx, userId, task, `joined ${channelId}`);
+    const isJoined = ['member', 'administrator', 'creator', 'restricted'].includes(member.status)
+      && member.status !== 'kicked' && member.status !== 'left';
+
+    if (isJoined) {
+      await autoAward(ctx, userId, task, 'join-verified');
     } else {
       await ctx.replyWithHTML(
-        `<b>Not a Member</b>\n\n` +
-        `You have not joined <b>${channelId}</b> yet.\n\n` +
-        `<a href="${task.link}">Join here</a>, then tap Verify again.`,
+        `<b>Not a Member Yet</b>\n\nJoin the channel/group first, then tap Verify again.`,
         taskCardKeyboard(task.id, task.link, task.buttonLabel, task.taskType)
       );
     }
-  } catch {
-    await ctx.replyWithHTML(
-      `<b>Could Not Verify</b>\n\n` +
-      `The bot could not confirm your membership in <b>${channelId}</b>.\n\n` +
-      `Make sure you have joined, then tap Verify again. If the problem persists, contact an admin.`,
-      taskCardKeyboard(task.id, task.link, task.buttonLabel, task.taskType)
-    );
+  } catch (err) {
+    // Bot not in channel — trust-based fallback
+    const botNotInChannel =
+      err.message.includes('bot is not a member') ||
+      err.message.includes('CHANNEL_PRIVATE') ||
+      err.message.includes('chat not found') ||
+      err.message.includes('not enough rights') ||
+      err.message.includes('Bad Request: member list is inaccessible');
+
+    if (botNotInChannel) {
+      await autoAward(ctx, userId, task, 'join-trust');
+    } else {
+      await ctx.replyWithHTML(`<i>Verification error. Please try again in a moment.</i>`);
+    }
   }
 }
 
@@ -482,44 +485,23 @@ async function handleGuide(ctx) {
     `${'─'.repeat(32)}\n\n` +
     `<b>Menu Buttons:</b>\n` +
     `<b>Tasks</b> — View and complete active Twitter/Telegram tasks\n` +
-    `<b>Raids</b> — View and join active raid campaigns (multiple tasks bundled)\n` +
+    `<b>Raids</b> — View and join active raid campaigns\n` +
     `<b>Leaderboard</b> — See the top point earners\n` +
     `<b>My Profile</b> — View your stats, points, rank and connected accounts\n` +
     `<b>Settings</b> — Connect wallet, Discord, and Twitter account\n` +
     `<b>Help</b> — Show this guide\n\n` +
-    `<b>User Commands:</b>\n` +
-    `/start — Start the bot and see the welcome message\n` +
-    `/profile — View your profile\n` +
-    `/leaderboard — View the top leaderboard\n` +
-    `/help — Show this guide\n` +
-    `/guide — Show this guide\n\n` +
     `<b>How to Complete a Task:</b>\n` +
     `1. Tap Tasks or Raids\n` +
     `2. Select a task from the list\n` +
     `3. Open the link and complete the action\n` +
-    `4. Tap "I Did It — Verify" (in your DM)\n` +
+    `4. Tap the verify button in your DM\n` +
     `5. Points are awarded automatically!\n\n` +
-    `<b>Comment / Quote Tasks:</b>\n` +
-    `After posting your reply or quote tweet, paste your tweet URL to verify.\n\n` +
-    `<b>Twitter Tasks:</b>\n` +
-    `Connect your Twitter account via Settings. Your username is permanent once set — only an admin can change it.\n\n` +
-    `<b>Group Tasks:</b>\n` +
-    `When completing tasks from a group, tap "Submit in DM" to verify in private.\n\n` +
-    `<b>Points:</b>\n` +
-    `Points are awarded instantly after successful verification.\n\n` +
-    `<b>Admin Commands (for group admins):</b>\n` +
-    `/admin — Open the admin panel\n\n` +
-    `<b>Owner Commands:</b>\n` +
-    `/addgroup — Register a group\n` +
-    `/removegroup — Unregister a group\n` +
-    `/listgroups — List registered groups\n` +
-    `/addadmin — Add a group admin\n` +
-    `/removeadmin — Remove a group admin\n` +
-    `/setsheet — Link a Google Sheet\n` +
-    `/broadcast — DM all users\n` +
-    `/changeusertwitter — Change a user's Twitter username\n` +
-    `   Example: <code>/changeusertwitter 123456789 @newhandle</code>\n` +
-    `/ownerhelp — Full owner command reference`
+    `<b>Comment / Quote / Retweet Tasks:</b>\n` +
+    `Submit the URL of your tweet after completing the action.\n\n` +
+    `<b>Combined Tasks:</b>\n` +
+    `Some tasks require you to do multiple actions (e.g. Retweet + Comment). Complete all steps, then submit your proof URL.\n\n` +
+    `<b>Info Requests:</b>\n` +
+    `When an admin sends you an information request, simply reply with your answer — it is recorded automatically.`
   );
 }
 
@@ -528,7 +510,7 @@ async function handleGuide(ctx) {
 // ═══════════════════════════════════════════════
 
 async function handleHelp(ctx) {
-  await handleGuide(ctx);
+  return handleGuide(ctx);
 }
 
 // ═══════════════════════════════════════════════
@@ -536,60 +518,78 @@ async function handleHelp(ctx) {
 // ═══════════════════════════════════════════════
 
 async function handleSessionInput(ctx, next) {
-  const userId = ctx.from?.id;
-  if (!userId) return next();
+  if (ctx.chat?.type !== 'private') return next();
+  if (!ctx.message?.text) return next();
 
-  const s = session.getSession(userId);
+  const userId = ctx.from.id;
+  const text   = ctx.message.text.trim();
+  const s      = session.getSession(userId);
+
   if (!s || s.adminFlow) return next();
 
-  const hasText  = !!ctx.message?.text;
-  const hasPhoto = !!(ctx.message?.photo?.length);
-
-  if (!hasText && !hasPhoto) return next();
-
-  const text = ctx.message?.text?.trim() || '';
-  if (text.startsWith('/')) { session.clearSession(userId); return next(); }
-
-  // ── Twitter handle (first-time connect — locked after) ──────────────────────
-  if (s.step === 'awaiting_twitter' || s.step === 'awaiting_twitter_for_task') {
+  // ── Collect Info Answer ──────────────────────────────────────────────────────
+  if (s.step === 'collect_info_answer') {
     session.clearSession(userId);
-    const user = store.getUser(userId);
-    if (user?.twitterLocked) {
-      return ctx.replyWithHTML(
-        `<b>Already Locked</b>\n\nYour Twitter is already set to <b>${user.twitter}</b>. Contact an admin to change it.`
-      );
-    }
-    if (!text.match(/^@?[A-Za-z0-9_]{1,50}$/)) {
-      return ctx.replyWithHTML('Invalid handle. Example: <code>@johndoe</code>');
-    }
-    const clean = text.startsWith('@') ? text : `@${text}`;
-    const success = store.setUserTwitter(userId, clean);
-    if (!success) {
-      return ctx.replyWithHTML(`<b>Already Set</b>\n\nYour Twitter is locked. Contact an admin to change it.`);
-    }
+    const question = s.question || 'Admin question';
+    const answer   = text;
+    const username = ctx.from.username || ctx.from.first_name || 'unknown';
+    const user     = store.getUser(userId);
 
-    // Sync to Google Sheet
+    // Save to store
+    store.setCollectedInfo(userId, question, answer);
+
+    // Record in Google Sheets for every group that has a sheet
     const groups = store.getAllGroups();
     for (const g of groups) {
       if (g.sheetId && g.sheetId !== 'none') {
         try {
-          await sheets.upsertUser(g.sheetId, {
-            userId, username: store.getUser(userId)?.username || 'unknown',
-            twitter: clean, wallet: null, discord: null, points: 0,
+          await sheets.appendCollectedInfo(g.sheetId, {
+            userId, username, twitter: user?.twitter || '',
+            question, answer,
           });
-        } catch {}
+        } catch (e) { console.error('[Sheets] CollectedInfo:', e.message); }
       }
     }
 
     await ctx.replyWithHTML(
-      `<b>Twitter Connected!</b>\n\n` +
-      `Account: <b>${clean}</b>\n\n` +
-      `<i>This is now permanently linked to your profile. Contact an admin if you need to change it.</i>`
+      `<b>Answer Received!</b>\n` +
+      `${'─'.repeat(28)}\n` +
+      `<b>Question:</b> ${question}\n` +
+      `<b>Your Answer:</b> ${answer}\n\n` +
+      `<i>Thank you! Your response has been recorded.</i>`
     );
     return;
   }
 
-  // ── Comment URL submission ─────────────────────────────────────────────────
+  // ── Twitter for task ──────────────────────────────────────────────────────────
+  if (s.step === 'awaiting_twitter_for_task') {
+    const handle = text.startsWith('@') ? text : `@${text}`;
+    const clean  = handle.replace('@', '').toLowerCase().trim();
+    const ok = store.setUserTwitter(userId, clean);
+    if (!ok) {
+      return ctx.replyWithHTML(`Your Twitter is already locked. Contact an admin to change it.`);
+    }
+    await ctx.replyWithHTML(`Twitter set to <b>${handle}</b>. Now try the task again.`);
+    session.clearSession(userId);
+    return;
+  }
+
+  // ── Twitter handle ────────────────────────────────────────────────────────────
+  if (s.step === 'awaiting_twitter') {
+    session.clearSession(userId);
+    const handle = text.startsWith('@') ? text : `@${text}`;
+    const clean  = handle.replace('@', '').toLowerCase().trim();
+    const ok = store.setUserTwitter(userId, clean);
+    if (!ok) {
+      return ctx.replyWithHTML(
+        `<b>Twitter Locked</b>\n\nYour Twitter account is already set and locked. Contact an admin to change it.`
+      );
+    }
+    await ctx.replyWithHTML(`<b>Twitter Connected!</b>\n\n<b>${handle}</b> linked to your account.`);
+    return;
+  }
+
+  // ── Comment URL ───────────────────────────────────────────────────────────────
   if (s.step === 'awaiting_comment_url') {
     session.clearSession(userId);
     const task = store.getTask(s.taskId);
@@ -599,11 +599,11 @@ async function handleSessionInput(ctx, next) {
       return ctx.replyWithHTML('Invalid URL. Send your reply tweet link (x.com or twitter.com).');
     }
 
-    await ctx.replyWithHTML('<i>Verifying reply...</i>');
+    await ctx.replyWithHTML('<i>Verifying comment...</i>');
     const user = store.getUser(userId);
     const originalId = tw.extractTweetId(task.link);
 
-    const result = await tw.verifyReply(text, originalId, user?.twitter, 20).catch(() => ({
+    const result = await tw.verifyComment(text, originalId, user?.twitter, task.min_chars || 20).catch(() => ({
       verified: false, reason: 'Twitter API error. Please try again in a moment.',
     }));
 
@@ -615,7 +615,21 @@ async function handleSessionInput(ctx, next) {
     return;
   }
 
-  // ── Quote URL submission ───────────────────────────────────────────────────
+  // ── Retweet URL ───────────────────────────────────────────────────────────────
+  if (s.step === 'awaiting_retweet_url') {
+    session.clearSession(userId);
+    const task = store.getTask(s.taskId);
+    if (!task) return ctx.replyWithHTML('Task no longer exists.');
+
+    if (!tw.isTweetUrl(text)) {
+      return ctx.replyWithHTML('Invalid URL. Send your retweet link (x.com or twitter.com).');
+    }
+
+    await autoAward(ctx, userId, task, text);
+    return;
+  }
+
+  // ── Quote URL ─────────────────────────────────────────────────────────────────
   if (s.step === 'awaiting_quote_url') {
     session.clearSession(userId);
     const task = store.getTask(s.taskId);
