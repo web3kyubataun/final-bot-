@@ -1,625 +1,576 @@
 /**
- * user.js — User-facing handlers
- *
- * Verify flow:
- *   like/follow   → tap "Verify" → Twitter API check (v1.1 with OAuth)
- *   retweet       → tap "Verify" → Twitter API check (v2 bearer)
- *   comment/quote → user sends tweet URL → API verify (author + content check)
- *   join          → tap "Verify" → getChatMember check
- *   react/send    → tap "Done"   → trust-based (cannot be verified remotely)
+ * user.js — All user-facing interactions
  */
 
-const store   = require('../store');
-const sheets  = require('../services/sheets');
+const { Markup } = require('telegraf');
+const store = require('../store');
 const session = require('../sessions');
-const config  = require('../config');
+const { getTokens } = require('../db/sqlite');
+const { generateAuthUrl } = require('../oauth/twitterOAuth');
+const tw = require('../utils/twitterVerify');
+const sheets = require('../services/sheets');
 const { getBotUsername } = require('../botInfo');
 const {
-  mainMenuKeyboard, profileKeyboard, settingsKeyboard,
-  taskListKeyboard, taskCardKeyboard, taskCardDMKeyboard, cancelKeyboard,
+ mainMenuKeyboard, profileKeyboard, settingsKeyboard, oauthConnectKeyboard,
+ taskListKeyboard, taskCardKeyboard, cancelKeyboard,
 } = require('../utils/keyboard');
-const tw = require('../utils/twitterVerify');
-const { Markup } = require('telegraf');
 
 const TASK_TYPE_LABELS = {
-  follow: 'Follow',  like: 'Like',    retweet: 'Retweet',
-  comment: 'Comment', quote: 'Quote Tweet',
-  join: 'Join Channel/Group', react: 'React to Message', send: 'Send Message',
+ follow: 'Follow @handle on Twitter',
+ like: 'Like the tweet',
+ retweet: 'Retweet the post',
+ comment: 'Reply to the tweet with your comment',
+ quote: 'Quote tweet the post',
+ join: 'Join the Telegram channel/group',
+ react: 'React to the message',
+ send: 'Send a message',
 };
 
-const delay = ms => new Promise(r => setTimeout(r, ms));
-
-// ═══════════════════════════════════════════════
-//  AUTO-AWARD helper
-// ═══════════════════════════════════════════════
-
-async function autoAward(ctx, userId, task, proofText) {
-  const username = ctx.from.username || ctx.from.first_name || 'unknown';
-  const sub = store.createSubmission(
-    userId, username, task.groupId, task.id,
-    task.title, proofText || 'auto-verified', task.reward, 'text', null
-  );
-
-  store.approveSubmission(sub.id);
-  store.addPoints(userId, task.reward);
-
-  const user  = store.getUser(userId);
-  const group = store.getGroup(task.groupId);
-
-  // Update Google Sheet
-  if (group?.sheetId && group.sheetId !== 'none') {
-    try {
-      await sheets.appendSubmission(group.sheetId, {
-        timestamp: new Date().toISOString(), userId, username,
-        task: task.title, proof: proofText || 'verified', status: 'approved', points: task.reward,
-      });
-    } catch (e) { console.error('[Sheets]', e.message); }
-  }
-
-  await ctx.replyWithHTML(
-    `🎉 <b>Task Verified!</b>\n` +
-    `${'─'.repeat(28)}\n` +
-    `🎯 <b>${task.title}</b>\n` +
-    `💰 <b>+${task.reward} pts</b> awarded!\n` +
-    `🏦 Total: <b>${user?.points ?? '?'} pts</b>\n\n` +
-    `Keep completing tasks to climb the leaderboard! 🚀`
-  );
-}
-
-// ═══════════════════════════════════════════════
-//  /start  — also handles deeplinks /start submit_N
-// ═══════════════════════════════════════════════
+// ── /start ────────────────────────────────────────────────────────────────────
 
 async function handleStart(ctx) {
-  const payload = ctx.startPayload;
+ const payload = ctx.startPayload;
 
-  if (payload?.startsWith('submit_')) {
-    const taskId = parseInt(payload.replace('submit_', ''));
-    const task   = store.getTask(taskId);
+ if (payload?.startsWith('submit_')) {
+ const taskId = parseInt(payload.replace('submit_', ''));
+ const task = store.getTask(taskId);
+ if (!task || !task.active) {
+ return ctx.replyWithHTML('<b>Task Unavailable</b>\n\nThis task is no longer active or does not exist.');
+ }
+ if (task.type === 'raid' && task.expiresAt && new Date(task.expiresAt) < new Date()) {
+ return ctx.replyWithHTML('<b>Raid Expired</b>\n\nThis raid has ended.');
+ }
+ if (store.hasSubmitted(ctx.from.id, task.groupId, taskId)) {
+ return ctx.replyWithHTML('<b>Already Done</b>\n\nYou have already completed this task!');
+ }
+ store.getOrCreateUser(ctx.from.id, ctx.from.username || ctx.from.first_name);
+ return sendTaskCard(ctx, task, true);
+ }
 
-    if (!task || !task.active) {
-      return ctx.replyWithHTML('❌ That task is no longer available.');
-    }
-    if (store.hasSubmitted(ctx.from.id, task.groupId, taskId)) {
-      return ctx.replyWithHTML('⚠️ You already completed this task.');
-    }
+ const user = store.getOrCreateUser(ctx.from.id, ctx.from.username || ctx.from.first_name);
+ if (ctx.from.first_name) store.setUserField(ctx.from.id, 'firstName', ctx.from.first_name);
+ const tokens = getTokens(ctx.from.id);
+ const hasOAuth = !!(tokens?.access_token);
 
-    store.getOrCreateUser(ctx.from.id, ctx.from.username || ctx.from.first_name);
-    return sendTaskCard(ctx, task, true);
-  }
+ const welcomeText =
+`<b>Welcome to Momentum Hub!</b>\n${'─'.repeat(28)}\n\n` +
+`<b>What We Do:</b>\n` +
+`We connect a powerful network of engaged members who support each other's social media presence across all major platforms including Instagram, TikTok, X, YouTube, LinkedIn, and more. Every like, share, comment, and follow fuels a thriving ecosystem built on mutual growth and real rewards.\n\n` +
+`<b>Why Members Love It:</b>\n` +
+`• Real, active community with no bots, no fake accounts\n` +
+`• Fast payment processing so get paid without the wait\n` +
+`• Dedicated support team available 24/7\n` +
+`• Transparent point tracking dashboard\n` +
+`• Exclusive member-only campaigns with top brands\n\n` +
+`<b>Who It's For:</b>\n` +
+`Whether you're a rising creator or a seasoned influencer, Momentum Hub is your unfair advantage in the attention economy.`;
 
-  const user = store.getOrCreateUser(ctx.from.id, ctx.from.username || ctx.from.first_name);
-  await ctx.replyWithHTML(
-    `✨ <b>Welcome!</b> ✨\n` +
-    `${'─'.repeat(28)}\n\n` +
-    `Hey <b>${ctx.from.first_name}</b>! 👋\n\n` +
-    `💰 Your Points: <b>${user.points}</b>\n` +
-    `🏆 Complete tasks & raids to earn points and climb the leaderboard!\n\n` +
-    `Use the menu below 👇`,
-    mainMenuKeyboard()
-  );
+ if (hasOAuth) {
+ await ctx.replyWithHTML(welcomeText);
+ await ctx.replyWithHTML(
+` <b>Twitter Connected:</b> @${user.twitter || 'linked'}\n\nYour Points: <b>${user.points}</b>`,
+ mainMenuKeyboard()
+ );
+ } else {
+ await ctx.replyWithHTML(
+ welcomeText +`\n\n <b>Your Twitter account can only be connected once and cannot be changed by you. Contact an admin if you need it updated.</b>`,
+ Markup.inlineKeyboard([[Markup.button.callback(' Connect Twitter Account via OAuth', 'connect_twitter_oauth')]])
+ );
+ }
 }
 
-// ═══════════════════════════════════════════════
-//  TASK MENUS
-// ═══════════════════════════════════════════════
+// ── Task card ─────────────────────────────────────────────────────────────────
+
+function getTaskInstructions(task) {
+ const types = task.taskTypes ? JSON.parse(task.taskTypes) : [task.taskType];
+ const instructions = {
+ like: 'Like the tweet, then tap Verify.',
+ retweet: 'Retweet the post (natively), then tap Verify.',
+ follow: 'Follow the account, then tap Verify.',
+ comment: 'Reply to the tweet with your comment, then paste your reply URL.',
+ quote: 'Quote tweet the post, then paste your quote tweet URL.',
+ join: 'Join the channel/group, then tap Verify.',
+ react: 'React to the message (trust-based).',
+ send: 'Send the message (trust-based).',
+ };
+ return types.map(t =>`• ${instructions[t] || 'Complete the task'}`).join('\n');
+}
+
+async function sendTaskCard(ctx, task, isDm = false) {
+ const types = task.taskTypes ? JSON.parse(task.taskTypes) : [task.taskType];
+ const typeLabel = types.map(t => TASK_TYPE_LABELS[t] ? t.charAt(0).toUpperCase() + t.slice(1) : t).join(' + ');
+
+ let body =`<b>${task.type === 'raid' ? '' : ''} ${task.title}</b>\n${'─'.repeat(26)}\n`;
+ body +=`<b>Type:</b> ${typeLabel}\n<b>Reward:</b> ${task.reward} pts\n`;
+ if (task.minChars > 0) body +=`<b>Min characters:</b> ${task.minChars}\n`;
+ if (task.expiresAt) {
+ const ms = new Date(task.expiresAt) - Date.now();
+ if (ms > 0) {
+ const h = Math.floor(ms / 3600000);
+ const m = Math.floor((ms % 3600000) / 60000);
+ body +=`<b>Time left:</b> ${h > 0 ?`${h}h ${m}m` :`${m}m`}\n`;
+ }
+ }
+ body +=`\n<b>Required actions:</b>\n${getTaskInstructions(task)}\n\n<i>Complete all actions, then tap Verify.</i>`;
+
+ const primaryType = types[0];
+ await ctx.replyWithHTML(body, taskCardKeyboard(task.id, task.link, task.buttonLabel, primaryType));
+}
+
+async function handleViewTask(ctx) {
+ await ctx.answerCbQuery();
+ const taskId = parseInt(ctx.match[1]);
+ const task = store.getTask(taskId);
+ if (!task || !task.active) return ctx.replyWithHTML('<b>Task Unavailable</b>\n\nThis task no longer exists.');
+ if (store.hasSubmitted(ctx.from.id, task.groupId, taskId)) {
+ return ctx.replyWithHTML('<b>Already Done</b>\n\nYou already completed this task!');
+ }
+ await sendTaskCard(ctx, task, false);
+}
+
+// ── Submit / verify ───────────────────────────────────────────────────────────
+
+async function completeTask(ctx, userId, task, user) {
+ store.createSubmission(userId, user.username, task.groupId, task.id, task.title, 'auto-verified', task.reward, 'auto', null, 'approved');
+ store.addPoints(userId, task.reward);
+ const type = task.type;
+ if (type === 'raid') {
+ store.setUserField(userId, 'raidsCompleted', (user.raidsCompleted || 0) + 1);
+ } else {
+ store.setUserField(userId, 'tasksCompleted', (user.tasksCompleted || 0) + 1);
+ }
+
+ const updatedUser = store.getUser(userId);
+ await ctx.replyWithHTML(
+`<b> Task Completed!</b>\n\n<b>${task.title}</b>\n<b>+${task.reward} points</b>\nTotal: <b>${updatedUser.points} pts</b>`,
+ mainMenuKeyboard()
+ );
+
+ // Google Sheets logging (fire-and-forget)
+ const group = store.getGroup(task.groupId);
+ if (group?.sheetId) {
+ sheets.onCompletion(group.sheetId, {
+ user: { ...updatedUser, id: userId },
+ task,
+ isRaid: task.type === 'raid',
+ }).catch(() => {});
+ }
+}
+
+async function handleDoSubmit(ctx) {
+ await ctx.answerCbQuery();
+ const taskId = parseInt(ctx.match[1]);
+ const task = store.getTask(taskId);
+ const userId = ctx.from.id;
+
+ if (!task || !task.active) return ctx.replyWithHTML('<b>Task no longer active.</b>');
+ if (task.type === 'raid' && task.expiresAt && new Date(task.expiresAt) < new Date()) {
+ return ctx.replyWithHTML('<b>Raid Expired.</b>');
+ }
+ if (store.hasSubmitted(userId, task.groupId, taskId)) {
+ return ctx.replyWithHTML('<b>Already Done</b>\n\nYou already completed this task!');
+ }
+
+ const user = store.getUser(userId);
+ const types = task.taskTypes ? JSON.parse(task.taskTypes) : [task.taskType];
+
+ // ── Trust-based types (react, send) ──────────────────────────────────────
+ if (types.every(t => ['react', 'send'].includes(t))) {
+ return completeTask(ctx, userId, task, user);
+ }
+
+ // ── Join (Telegram) ───────────────────────────────────────────────────────
+ if (types.includes('join')) {
+ return verifyJoin(ctx, userId, task, user);
+ }
+
+ // ── Multi-step URL types (comment, quote) ─────────────────────────────────
+ const needsUrl = types.some(t => ['comment', 'quote'].includes(t));
+ if (needsUrl) {
+ session.setSession(userId, { step: 'awaiting_proof_url', taskId, taskTypes: types });
+ const typeLabel = types.includes('comment') ? 'reply' : 'quote tweet';
+ return ctx.replyWithHTML(
+`<b>Submit Your ${typeLabel === 'reply' ? 'Reply' : 'Quote Tweet'} URL</b>\n\nPaste the URL of <b>your ${typeLabel} tweet</b>:`,
+ cancelKeyboard()
+ );
+ }
+
+ // ── Retweet ───────────────────────────────────────────────────────────────
+ if (types.includes('retweet')) {
+ if (!user?.twitter) {
+ return ctx.replyWithHTML(
+`<b>Twitter Not Connected</b>\n\nConnect your Twitter account first.\n\nGo to Settings → Connect Twitter via OAuth.`,
+ cancelKeyboard()
+ );
+ }
+ const tweetId = tw.extractTweetId(task.link);
+ if (!tweetId) return ctx.replyWithHTML(`<b>Invalid task link.</b> Contact an admin.`);
+ await ctx.replyWithHTML(`<i>Checking your retweet via Twitter API…</i>`);
+ const result = await tw.verifyRetweet(tweetId, user.twitter, userId).catch(() => ({
+ verified: false, apiError: true, reason: 'Twitter API is temporarily unavailable. Please wait 30 seconds and try again.'
+ }));
+ if (result.verified) return completeTask(ctx, userId, task, user);
+ if (result.needsOAuth) {
+ return ctx.replyWithHTML(
+`<b>OAuth Required</b>\n\n${result.reason}`,
+ Markup.inlineKeyboard([[Markup.button.callback(' Connect Twitter via OAuth', 'connect_twitter_oauth')]])
+ );
+ }
+ return ctx.replyWithHTML(
+`<b>${result.apiError ? ' API Error' : 'Not Verified'}</b>\n\n${result.reason}`,
+ taskCardKeyboard(task.id, task.link, task.buttonLabel, 'retweet')
+ );
+ }
+
+ // ── Like ─────────────────────────────────────────────────────────────────
+ if (types.includes('like')) {
+ if (!user?.twitter) {
+ return ctx.replyWithHTML(
+`<b>Twitter Not Connected</b>\n\nConnect your Twitter account first.`,
+ Markup.inlineKeyboard([[Markup.button.callback(' Connect Twitter via OAuth', 'connect_twitter_oauth')]])
+ );
+ }
+ const tweetId = tw.extractTweetId(task.link);
+ if (!tweetId) return ctx.replyWithHTML(`<b>Invalid task link.</b> Contact an admin.`);
+ await ctx.replyWithHTML(`<i>Verifying like via Twitter API…</i>`);
+ const result = await tw.verifyLike(tweetId, user.twitter, userId).catch(() => ({
+ verified: false, apiError: true, reason: 'Twitter API is temporarily unavailable. Please wait 30 seconds and try again.'
+ }));
+ if (result.verified) return completeTask(ctx, userId, task, user);
+ if (result.needsOAuth) {
+ return ctx.replyWithHTML(
+`<b>OAuth Required</b>\n\n${result.reason}`,
+ Markup.inlineKeyboard([[Markup.button.callback(' Connect Twitter via OAuth', 'connect_twitter_oauth')]])
+ );
+ }
+ return ctx.replyWithHTML(
+`<b>${result.apiError ? ' API Error' : 'Not Verified'}</b>\n\n${result.reason}`,
+ taskCardKeyboard(task.id, task.link, task.buttonLabel, 'like')
+ );
+ }
+
+ // ── Follow ────────────────────────────────────────────────────────────────
+ if (types.includes('follow')) {
+ if (!user?.twitter) {
+ return ctx.replyWithHTML(
+`<b>Twitter Not Connected</b>\n\nConnect your Twitter account first.`,
+ Markup.inlineKeyboard([[Markup.button.callback(' Connect Twitter via OAuth', 'connect_twitter_oauth')]])
+ );
+ }
+ const targetHandle = tw.extractUsername(task.link);
+ if (!targetHandle) return ctx.replyWithHTML(`<b>Invalid task link.</b> Contact an admin.`);
+ await ctx.replyWithHTML(`<i>Verifying follow via Twitter API…</i>`);
+ const result = await tw.verifyFollow(targetHandle, user.twitter, userId).catch(() => ({
+ verified: false, apiError: true, reason: 'Twitter API is temporarily unavailable. Please wait 30 seconds and try again.'
+ }));
+ if (result.verified) return completeTask(ctx, userId, task, user);
+ if (result.needsOAuth) {
+ return ctx.replyWithHTML(
+`<b>OAuth Required</b>\n\n${result.reason}`,
+ Markup.inlineKeyboard([[Markup.button.callback(' Connect Twitter via OAuth', 'connect_twitter_oauth')]])
+ );
+ }
+ return ctx.replyWithHTML(
+`<b>${result.apiError ? ' API Error' : 'Not Verified'}</b>\n\n${result.reason}`,
+ taskCardKeyboard(task.id, task.link, task.buttonLabel, 'follow')
+ );
+ }
+}
+
+// ── Verify Telegram join ──────────────────────────────────────────────────────
+
+async function verifyJoin(ctx, userId, task, user) {
+ if (!task.link) return completeTask(ctx, userId, task, user);
+ try {
+ const chatId = task.link.includes('t.me/') ? '@' + task.link.split('t.me/')[1].replace(/\/$/, '') : task.link;
+ const member = await ctx.telegram.getChatMember(chatId, userId);
+ const joined = ['member', 'administrator', 'creator', 'restricted'].includes(member.status);
+ if (joined) return completeTask(ctx, userId, task, user);
+ return ctx.replyWithHTML(
+`<b>Not Yet Joined</b>\n\n<a href="${task.link}">Join here</a>, then tap Verify again.`,
+ taskCardKeyboard(task.id, task.link, task.buttonLabel, 'join')
+ );
+ } catch {
+ return ctx.replyWithHTML(
+`<b>Could Not Verify</b>\n\nMake sure you have joined, then tap Verify again.`,
+ taskCardKeyboard(task.id, task.link, task.buttonLabel, 'join')
+ );
+ }
+}
+
+// ── Session input handler ─────────────────────────────────────────────────────
+
+async function handleSessionInput(ctx, next) {
+ const userId = ctx.from?.id;
+ if (!userId || !ctx.message?.text) return next();
+ const s = session.getSession(userId);
+ if (!s || s.adminFlow) return next();
+
+ const text = ctx.message.text.trim();
+
+ if (text === '/cancel') {
+ session.clearSession(userId);
+ return ctx.replyWithHTML('Cancelled.');
+ }
+
+ if (s.step === 'awaiting_wallet') {
+ store.setUserField(userId, 'wallet', text);
+ session.clearSession(userId);
+ return ctx.replyWithHTML(`<b>Wallet saved.</b>\n\n<code>${text}</code>`);
+ }
+
+ if (s.step === 'awaiting_discord') {
+ store.setUserField(userId, 'discord', text);
+ session.clearSession(userId);
+ return ctx.replyWithHTML(`<b>Discord saved.</b>\n\n<code>${text}</code>`);
+ }
+
+ if (s.step === 'awaiting_proof_url') {
+ const taskId = s.taskId;
+ const taskTypes = s.taskTypes || [];
+ const task = store.getTask(taskId);
+ if (!task) { session.clearSession(userId); return ctx.replyWithHTML('<b>Task not found.</b>'); }
+ const user = store.getUser(userId);
+
+ const isComment = taskTypes.includes('comment');
+ const isQuote = taskTypes.includes('quote');
+ const origId = tw.extractTweetId(task.link);
+
+ await ctx.replyWithHTML(`<i>Verifying your ${isComment ? 'reply' : 'quote tweet'} via Twitter API…</i>`);
+
+ const apiErrFallback = (e) => ({
+ verified: false, apiError: true,
+ reason: 'Twitter API is temporarily unavailable. Please wait 30 seconds and try again.'
+ });
+
+ const result = isComment
+ ? await tw.verifyReply(text, origId, user?.twitter, task.minChars || 0).catch(apiErrFallback)
+ : await tw.verifyQuote(text, origId, user?.twitter, task.minChars || 0).catch(apiErrFallback);
+
+ session.clearSession(userId);
+
+ if (result.verified) return completeTask(ctx, userId, task, user);
+ return ctx.replyWithHTML(
+`<b>${result.apiError ? ' API Error' : 'Not Verified'}</b>\n\n${result.reason}\n\n<i>Tap Verify again after 30 seconds to retry.</i>`,
+ taskCardKeyboard(task.id, task.link, task.buttonLabel, isComment ? 'comment' : 'quote')
+ );
+ }
+
+ return next();
+}
+
+// ── Menu handlers ─────────────────────────────────────────────────────────────
 
 async function handleTasksMenu(ctx) {
-  let tasks = [];
-  store.getAllGroups().forEach(g => tasks.push(...store.getTasksForGroup(g.id, 'task')));
-  if (!tasks.length) return ctx.replyWithHTML(`🎯 <b>Active Tasks</b>\n\n💤 No active tasks right now. Check back soon!`);
-  await ctx.replyWithHTML(
-    `🎯 <b>Active Tasks</b> (${tasks.length})\n\n<i>Tap a task to view details:</i>`,
-    taskListKeyboard(tasks)
-  );
+ let tasks = [];
+ store.getAllGroups().forEach(g => tasks.push(...store.getTasksForGroup(g.id, 'task')));
+ if (!tasks.length) return ctx.replyWithHTML(`<b>Active Tasks</b>\n\n<i>No active tasks right now. Check back soon!</i>`);
+ await ctx.replyWithHTML(`<b>Active Tasks</b> (${tasks.length})\n\n<i>Tap a task to view details:</i>`, taskListKeyboard(tasks));
 }
 
 async function handleRaidsMenu(ctx) {
-  let raids = [];
-  store.getAllGroups().forEach(g => raids.push(...store.getTasksForGroup(g.id, 'raid')));
-  if (!raids.length) return ctx.replyWithHTML(`⚡ <b>Active Raids</b>\n\n💤 No raids running right now!`);
-  await ctx.replyWithHTML(
-    `⚡ <b>Active Raids</b> (${raids.length})\n\n<i>Tap a raid to view details:</i>`,
-    taskListKeyboard(raids)
-  );
+ const now = new Date();
+ let raids = [];
+ store.getAllGroups().forEach(g => raids.push(...store.getTasksForGroup(g.id, 'raid')));
+ if (!raids.length) return ctx.replyWithHTML(`<b>Active Raids</b>\n\n<i>No raids running right now!</i>`);
+ const lines = raids.map(r => {
+ let timeLeft = '';
+ if (r.expiresAt) {
+ const ms = new Date(r.expiresAt) - now;
+ if (ms > 0) {
+ const h = Math.floor(ms / 3600000);
+ const m = Math.floor((ms % 3600000) / 60000);
+ timeLeft = h > 0 ?` (${h}h ${m}m left)` :` (${m}m left)`;
+ } else { timeLeft = ' (expired)'; }
+ }
+ return`[Raid] <b>${r.title}</b> — ${r.reward} pts${timeLeft}`;
+ }).join('\n');
+ await ctx.replyWithHTML(`<b>Active Raids</b>\n\n${lines}`, taskListKeyboard(raids));
 }
-
-// ── View task detail ───────────────────────────────────────────────────────────
-async function handleViewTask(ctx) {
-  const taskId = parseInt(ctx.match[1]);
-  const task   = store.getTask(taskId);
-  if (!task) return ctx.answerCbQuery('Task not found.', { show_alert: true });
-
-  await ctx.answerCbQuery();
-  store.getOrCreateUser(ctx.from.id, ctx.from.username || ctx.from.first_name);
-
-  const isInGroup = ctx.chat?.type !== 'private';
-  const botName   = getBotUsername();
-  return sendTaskCard(ctx, task, !isInGroup, isInGroup, botName);
-}
-
-// Shared task card sender
-async function sendTaskCard(ctx, task, inDM = true, inGroup = false, botName) {
-  const userId     = ctx.from.id;
-  const alreadyDone = store.hasSubmitted(userId, task.groupId, task.id);
-  const emoji      = task.type === 'raid' ? '⚡' : '🎯';
-  const typeLabel  = TASK_TYPE_LABELS[task.taskType] || task.taskType || '';
-  const platLabel  = task.platform === 'telegram' ? '✈️ Telegram' : '🐦 Twitter/X';
-
-  let body =
-    `${emoji} <b>${task.title}</b>\n` +
-    `${'─'.repeat(28)}\n` +
-    `🏷 Type: <b>${typeLabel}</b>  ${platLabel}\n` +
-    (task.link ? `🔗 <a href="${task.link}">Open Link</a>\n` : '') +
-    `💰 Reward: <b>${task.reward} pts</b>\n` +
-    `${'─'.repeat(28)}\n`;
-
-  if (alreadyDone) {
-    body += `✅ <i>Already completed!</i>`;
-    return ctx.replyWithHTML(body);
-  }
-
-  // Instructions per task type
-  const instructions = {
-    like:    `❤️ Like the tweet, then tap <b>Verify</b>.`,
-    retweet: `🔁 Retweet the post, then tap <b>Verify</b>.`,
-    follow:  `👤 Follow the account, then tap <b>Verify</b>.`,
-    comment: `💬 Reply to the tweet with at least 20 characters.\n\nThen tap <b>Submit My Tweet URL</b> and paste your reply link.`,
-    quote:   `🗣 Quote tweet with at least 20 characters.\n\nThen tap <b>Submit My Tweet URL</b> and paste your quote link.`,
-    join:    `📥 Join the channel/group, then tap <b>Verify</b>.`,
-    react:   `👍 React to the message, then tap <b>Done</b>.`,
-    send:    `✉️ Send a message in the group, then tap <b>Done</b>.`,
-  };
-  body += `<i>${instructions[task.taskType] || 'Complete the task, then verify.'}</i>`;
-
-  if (inGroup && botName) {
-    await ctx.replyWithHTML(body, taskCardDMKeyboard(task.id, task.link, task.buttonLabel, botName));
-  } else {
-    await ctx.replyWithHTML(body, taskCardKeyboard(task.id, task.link, task.buttonLabel, task.taskType));
-  }
-}
-
-// ── "I Did It / Verify / Submit URL" button ────────────────────────────────────
-async function handleDoSubmit(ctx) {
-  const taskId = parseInt(ctx.match[1]);
-  const task   = store.getTask(taskId);
-  if (!task) return ctx.answerCbQuery('Task not found.', { show_alert: true });
-
-  const userId = ctx.from.id;
-  const isInGroup = ctx.chat?.type !== 'private';
-
-  if (store.hasSubmitted(userId, task.groupId, taskId)) {
-    return ctx.answerCbQuery('✅ Already completed!', { show_alert: true });
-  }
-  if (!task.active) {
-    return ctx.answerCbQuery('❌ Task no longer active.', { show_alert: true });
-  }
-
-  // Redirect to DM if in group
-  if (isInGroup) {
-    await ctx.answerCbQuery('📬 Open DM to verify →', { show_alert: true });
-    const botName = getBotUsername();
-    await ctx.reply(
-      `📬 Verification must be done in private DM. Tap below:`,
-      Markup.inlineKeyboard([[Markup.button.url('📬 Verify in DM', `https://t.me/${botName}?start=submit_${taskId}`)]])
-    );
-    return;
-  }
-
-  await ctx.answerCbQuery();
-
-  store.getOrCreateUser(userId, ctx.from.username || ctx.from.first_name);
-  const user = store.getUser(userId);
-
-  // Twitter tasks need a Twitter handle
-  if (task.platform === 'twitter' && !user?.twitter) {
-    session.setSession(userId, { step: 'awaiting_twitter_for_task', taskId, adminFlow: false });
-    return ctx.replyWithHTML(
-      `🐦 <b>Twitter Handle Required</b>\n` +
-      `${'─'.repeat(28)}\n` +
-      `This is a Twitter task. Please set your Twitter handle first.\n\n` +
-      `Send your <b>@handle</b>:`,
-      cancelKeyboard()
-    );
-  }
-
-  // Route by task type
-  switch (task.taskType) {
-    // ── Comment / Quote: ask user for their tweet URL ──────────────────────────
-    case 'comment':
-    case 'quote': {
-      session.setSession(userId, {
-        step: task.taskType === 'comment' ? 'awaiting_comment_url' : 'awaiting_quote_url',
-        taskId,
-        adminFlow: false,
-      });
-      const label = task.taskType === 'comment' ? 'reply' : 'quote tweet';
-      await ctx.replyWithHTML(
-        `📤 <b>Submit Your ${task.taskType === 'comment' ? 'Comment' : 'Quote Tweet'}</b>\n` +
-        `${'─'.repeat(28)}\n` +
-        `1. Complete the task: <a href="${task.link}">Open Tweet</a>\n` +
-        `2. Post your ${label}\n` +
-        `3. Copy the URL of YOUR tweet\n` +
-        `4. Paste it here\n\n` +
-        `<i>Example: https://x.com/yourname/status/12345</i>`,
-        cancelKeyboard()
-      );
-      break;
-    }
-
-    // ── Join: verify via getChatMember ─────────────────────────────────────────
-    case 'join': {
-      await verifyJoin(ctx, userId, task);
-      break;
-    }
-
-    // ── Like / Follow: Twitter API verification ────────────────────────────────
-    case 'like':
-    case 'follow': {
-      await ctx.replyWithHTML(`<i>Verifying via Twitter API...</i>`);
-      const fn = task.taskType === 'like'
-        ? () => tw.verifyLike(tw.extractTweetId(task.link), user.twitter)
-        : () => tw.verifyFollow(tw.extractUsername(task.link), user.twitter);
-
-      // FIXED: do not auto-approve on API error — return failure with a retry message
-      const result = await fn().catch(() => ({
-        verified: false,
-        reason: 'Twitter API error. Please try again in a moment.',
-      }));
-
-      if (result.verified) {
-        await autoAward(ctx, userId, task, `${task.taskType}: ${task.link}`);
-      } else {
-        await ctx.replyWithHTML(
-          `❌ <b>Not Verified</b>\n\n${result.reason}\n\n` +
-          `<i>Complete the task first, then tap Verify again.</i>`,
-          taskCardKeyboard(task.id, task.link, task.buttonLabel, task.taskType)
-        );
-      }
-      break;
-    }
-
-    // ── Retweet: check via Twitter API ────────────────────────────────────────
-    case 'retweet': {
-      await ctx.replyWithHTML(`<i>Checking retweet via Twitter API...</i>`);
-      const tweetId = tw.extractTweetId(task.link);
-
-      // FIXED: do not auto-approve if tweet ID missing or API error
-      if (!tweetId) {
-        await ctx.replyWithHTML(
-          `❌ <b>Invalid Link</b>\n\nCould not extract tweet ID from the task link. Contact an admin.`
-        );
-        break;
-      }
-
-      const result = await tw.verifyRetweet(tweetId, user.twitter).catch(() => ({
-        verified: false,
-        reason: 'Twitter API error. Please try again in a moment.',
-      }));
-
-      if (result.verified) {
-        await autoAward(ctx, userId, task, `retweet: ${task.link}`);
-      } else {
-        await ctx.replyWithHTML(
-          `❌ <b>Retweet Not Found</b>\n\n${result.reason}\n\n` +
-          `<i>Retweet the tweet first, then tap Verify again.</i>`,
-          taskCardKeyboard(task.id, task.link, task.buttonLabel, task.taskType)
-        );
-      }
-      break;
-    }
-
-    // ── Telegram react / send: trust-based (cannot be verified remotely) ───────
-    case 'react':
-    case 'send': {
-      await autoAward(ctx, userId, task, `${task.taskType} completed`);
-      break;
-    }
-
-    default:
-      await autoAward(ctx, userId, task, 'completed');
-  }
-}
-
-// ── Telegram Join verification ─────────────────────────────────────────────────
-async function verifyJoin(ctx, userId, task) {
-  const match = String(task.link || '').match(/(?:t\.me\/|@)([A-Za-z0-9_]+)/i);
-  const channelId = match ? `@${match[1]}` : null;
-
-  if (!channelId) {
-    // No channel link stored — trust-based
-    return autoAward(ctx, userId, task, 'join completed');
-  }
-
-  try {
-    const member = await ctx.telegram.getChatMember(channelId, userId);
-    const ok = ['creator', 'administrator', 'member', 'restricted'].includes(member.status);
-    if (ok) {
-      return autoAward(ctx, userId, task, `joined ${channelId}`);
-    } else {
-      await ctx.replyWithHTML(
-        `❌ <b>Not a Member</b>\n\n` +
-        `You have not joined <b>${channelId}</b> yet.\n\n` +
-        `<a href="${task.link}">Join here</a>, then tap Verify again.`,
-        taskCardKeyboard(task.id, task.link, task.buttonLabel, task.taskType)
-      );
-    }
-  } catch {
-    // FIXED: bot is not in the channel — do not auto-award, tell user to try again
-    await ctx.replyWithHTML(
-      `⚠️ <b>Could Not Verify</b>\n\n` +
-      `The bot could not confirm your membership in <b>${channelId}</b>.\n\n` +
-      `Make sure you have joined, then tap Verify again. If the problem persists, contact an admin.`,
-      taskCardKeyboard(task.id, task.link, task.buttonLabel, task.taskType)
-    );
-  }
-}
-
-// ═══════════════════════════════════════════════
-//  LEADERBOARD
-// ═══════════════════════════════════════════════
 
 async function handleLeaderboard(ctx) {
-  if (ctx.callbackQuery) await ctx.answerCbQuery();
-  const top = store.getLeaderboard(10);
-  if (!top.length) return ctx.replyWithHTML(`🏆 <b>Leaderboard</b>\n\n<i>No users ranked yet. Be the first!</i>`);
-
-  const medals  = ['🥇', '🥈', '🥉'];
-  const maxPts  = top[0].points || 1;
-  const bar     = pts => { const f = Math.round((pts / maxPts) * 10); return '█'.repeat(f) + '░'.repeat(10 - f); };
-  const lines   = top.map((u, i) =>
-    `${medals[i] || `${i + 1}.`} <b>@${u.username}</b>\n   <code>${bar(u.points)}</code>  <b>${u.points}</b> pts`
-  );
-  await ctx.replyWithHTML(`🏆 <b>Leaderboard — Top ${top.length}</b>\n${'─'.repeat(28)}\n\n${lines.join('\n\n')}`);
+ const top = store.getLeaderboard(10);
+ if (!top.length) return ctx.replyWithHTML(`<b>Leaderboard</b>\n\n<i>No users with points yet.</i>`);
+ const medals = ['', '', ''];
+ const lines = top.map((u, i) => {
+ const icon = medals[i] ||`${i + 1}.`;
+ const name = u.username ?`@${u.username}` :`id:${u.id}`;
+ return`${icon} ${name}${u.twitter ?` (@${u.twitter})` : ''} — <b>${u.points} pts</b>`;
+ }).join('\n');
+ await ctx.replyWithHTML(`<b>Leaderboard — Top 10</b>\n${'─'.repeat(28)}\n\n${lines}`);
 }
-
-// ═══════════════════════════════════════════════
-//  PROFILE
-// ═══════════════════════════════════════════════
 
 async function handleMyProfile(ctx) {
-  if (ctx.callbackQuery) await ctx.answerCbQuery();
-  const userId = ctx.from.id;
-  const user   = store.getUser(userId);
-  if (!user) return ctx.replyWithHTML('Please use /start first.');
+ if (ctx.callbackQuery) await ctx.answerCbQuery();
+ const userId = ctx.from.id;
+ const user = store.getOrCreateUser(userId, ctx.from.username || ctx.from.first_name);
+ const tokens = getTokens(userId);
+ const hasOAuth = !!(tokens?.access_token);
 
-  const top  = store.getLeaderboard(1000);
-  const rank = top.findIndex(u => String(u.id) === String(userId)) + 1;
+ const rank = store.getLeaderboard(1000).findIndex(u => u.id === String(userId)) + 1;
 
-  const text =
-    `👤 <b>My Profile</b>\n` +
-    `${'─'.repeat(28)}\n` +
-    `🙍 @${user.username}\n` +
-    `💰 Points: <b>${user.points}</b>  🏆 Rank: <b>#${rank || '—'}</b>\n` +
-    `🐦 Twitter: ${user.twitter || '<i>Not set</i>'}\n` +
-    `👛 Wallet: ${user.wallet || '<i>Not set</i>'}\n` +
-    `💬 Discord: ${user.discord || '<i>Not set</i>'}\n` +
-    `${'─'.repeat(28)}`;
+ const twitterStatus = hasOAuth && user.twitter
+ ?` Connected: @${user.twitter}`
+ : hasOAuth
+ ?` OAuth linked (handle not set)`
+ :` Not connected`;
 
-  if (ctx.callbackQuery) {
-    await ctx.editMessageText(text, { parse_mode: 'HTML', ...profileKeyboard() }).catch(async () => {
-      await ctx.replyWithHTML(text, profileKeyboard());
-    });
-  } else {
-    await ctx.replyWithHTML(text, profileKeyboard());
-  }
+ const text =
+`<b>My Profile</b>\n${'─'.repeat(28)}\n` +
+`<b>Name:</b> ${ctx.from.first_name || 'N/A'}\n` +
+`<b>Username:</b> @${user.username || 'N/A'}\n` +
+`<b>Twitter:</b> ${twitterStatus}\n` +
+`<b>Points:</b> ${user.points}\n` +
+`<b>Rank:</b> ${rank > 0 ?`#${rank}` : 'N/A'}\n` +
+`<b>Tasks done:</b> ${user.tasksCompleted || 0}\n` +
+`<b>Raids done:</b> ${user.raidsCompleted || 0}\n` +
+ (user.wallet ?`<b>Wallet:</b> <code>${user.wallet}</code>\n` : '') +
+ (user.discord ?`<b>Discord:</b> ${user.discord}\n` : '') +
+`<b>Joined:</b> ${new Date(user.joinedAt).toLocaleDateString()}`;
+
+ await ctx.replyWithHTML(text, profileKeyboard());
 }
-
-// ═══════════════════════════════════════════════
-//  SETTINGS
-// ═══════════════════════════════════════════════
 
 async function handleSettings(ctx) {
-  const user = store.getUser(ctx.from.id);
-  if (!user) return ctx.replyWithHTML('Please use /start first.');
-  await ctx.replyWithHTML(
-    `⚙️ <b>Settings</b>\n${'─'.repeat(28)}\n` +
-    `🐦 Twitter: <b>${user.twitter || 'Not set'}</b>\n` +
-    `👛 Wallet: <b>${user.wallet || 'Not set'}</b>\n` +
-    `💬 Discord: <b>${user.discord || 'Not set'}</b>`,
-    settingsKeyboard()
-  );
-}
+ if (ctx.callbackQuery) await ctx.answerCbQuery();
+ const userId = ctx.from.id;
+ const tokens = getTokens(userId);
+ const hasOAuth = !!(tokens?.access_token);
+ const user = store.getUser(userId);
 
-// ═══════════════════════════════════════════════
-//  HELP
-// ═══════════════════════════════════════════════
+ const twitterStatus = hasOAuth && user?.twitter
+ ?` Connected: @${user.twitter} (locked — contact admin to change)`
+ : hasOAuth
+ ?` OAuth linked`
+ :` Not connected`;
+
+ await ctx.replyWithHTML(
+`<b>Settings</b>\n${'─'.repeat(28)}\n\n` +
+`<b>Twitter:</b> ${twitterStatus}\n\n` +
+`<i>Use the buttons below to update your profile.</i>`,
+ settingsKeyboard(hasOAuth)
+ );
+}
 
 async function handleHelp(ctx) {
-  await ctx.replyWithHTML(
-    `❓ <b>How to Use This Bot</b>\n` +
-    `${'─'.repeat(28)}\n\n` +
-    `<b>📱 Menu</b>\n` +
-    `🎯 <b>Tasks</b> — Active Twitter/Telegram tasks\n` +
-    `⚡ <b>Raids</b> — Active raid campaigns\n` +
-    `🏆 <b>Leaderboard</b> — Top earners\n` +
-    `👤 <b>My Profile</b> — Your stats & rank\n` +
-    `⚙️ <b>Settings</b> — Twitter, Wallet, Discord\n\n` +
-    `<b>📤 How to Complete a Task</b>\n` +
-    `1. Tap 🎯 Tasks or ⚡ Raids\n` +
-    `2. Select a task\n` +
-    `3. Complete it (open the link)\n` +
-    `4. Tap <b>✅ I Did It — Verify</b>\n` +
-    `5. The bot checks via Twitter API and awards points!\n\n` +
-    `<b>💬 Comment/Quote Tasks</b>\n` +
-    `After posting, paste your tweet URL to verify.\n\n` +
-    `<b>🐦 Twitter Tasks</b>\n` +
-    `Go to Settings and set your Twitter @handle first.\n\n` +
-    `<b>💰 Points</b>\n` +
-    `Awarded automatically after successful API verification.`
-  );
+ const userId = ctx.from.id;
+ const { isOwner, isAdminUser } = require('../middleware/auth');
+ const isAdm = isAdminUser(userId);
+ const isOwn = isOwner(userId);
+
+ let text =`<b>Help — Momentum Hub</b>\n${'─'.repeat(28)}\n\n`;
+ text +=
+`<b>User Commands</b>\n` +
+`/start — Welcome screen & Twitter connect\n` +
+`/profile — View your profile & points\n` +
+`/leaderboard — Top earners\n` +
+`/help — Show this help message\n\n` +
+`<b>Tasks & Raids</b>\n` +
+`Use the menu buttons:\n` +
+`• <b>Tasks</b> — Complete social media tasks to earn points\n` +
+`• <b>Raids</b> — Time-limited group actions\n` +
+`• <b>My Profile</b> — View your points and rank\n` +
+`• <b>Settings</b> — Connect Twitter, set wallet/Discord\n\n` +
+`<b>How verification works:</b>\n` +
+`• Like / Follow — verified via your OAuth-linked Twitter account\n` +
+`• Retweet — scans your recent tweets automatically\n` +
+`• Comment / Quote — paste the URL of your tweet\n` +
+`• Join — checked via Telegram membership\n`;
+
+ if (isAdm) {
+ text +=
+`\n<b>Admin Commands</b>\n` +
+`/admin — Open admin wizard panel\n` +
+`/commands — List all admin commands\n` +
+`/changeusertwitter &lt;userId&gt; @handle — Update a user's Twitter handle\n` +
+`/wladd &lt;userId&gt; — Add to whitelist\n` +
+`/wlremove &lt;userId&gt; — Remove from whitelist\n`;
+ }
+
+ if (isOwn) {
+ text +=
+`\n<b>Owner Commands</b>\n` +
+`/addgroup — Register a group\n` +
+`/removegroup — Unregister a group\n` +
+`/listgroups — List registered groups\n` +
+`/setsheet &lt;groupId&gt; &lt;sheetId&gt; — Link Google Sheet\n` +
+`/addadmin &lt;userId&gt; &lt;groupId&gt; — Grant admin role\n` +
+`/removeadmin &lt;userId&gt; &lt;groupId&gt; — Revoke admin role\n` +
+`/broadcast &lt;message&gt; — DM all users\n` +
+`/ownerhelp — All owner commands\n`;
+ }
+
+ await ctx.replyWithHTML(text);
 }
 
-// ═══════════════════════════════════════════════
-//  SESSION INPUT HANDLER
-// ═══════════════════════════════════════════════
+// ── OAuth connect ─────────────────────────────────────────────────────────────
 
-async function handleSessionInput(ctx, next) {
-  const userId = ctx.from?.id;
-  if (!userId) return next();
-
-  const s = session.getSession(userId);
-  if (!s || s.adminFlow) return next();
-
-  const hasText  = !!ctx.message?.text;
-  const hasPhoto = !!(ctx.message?.photo?.length);
-
-  if (!hasText && !hasPhoto) return next();
-
-  const text = ctx.message?.text?.trim() || '';
-  if (text.startsWith('/')) { session.clearSession(userId); return next(); }
-
-  // ── Twitter handle required before task ────────────────────────────────────
-  if (s.step === 'awaiting_twitter_for_task') {
-    session.clearSession(userId);
-    if (!text.match(/^@?[A-Za-z0-9_]{1,50}$/)) {
-      return ctx.replyWithHTML('❌ Invalid handle. Example: <code>@johndoe</code>');
-    }
-    const clean = text.startsWith('@') ? text : `@${text}`;
-    const user  = store.getUser(userId);
-    if (user) user.twitter = clean;
-
-    await ctx.replyWithHTML(`✅ Twitter set: <b>${clean}</b>\n\nTap the task again to verify.`);
-    return;
-  }
-
-  // ── Comment URL submission ─────────────────────────────────────────────────
-  if (s.step === 'awaiting_comment_url') {
-    session.clearSession(userId);
-    const task = store.getTask(s.taskId);
-    if (!task) return ctx.replyWithHTML('❌ Task no longer exists.');
-
-    if (!tw.isTweetUrl(text)) {
-      return ctx.replyWithHTML('❌ Invalid URL. Send your reply tweet link (x.com or twitter.com).');
-    }
-
-    await ctx.replyWithHTML('<i>Verifying reply...</i>');
-    const user = store.getUser(userId);
-    const originalId = tw.extractTweetId(task.link);
-
-    // FIXED: do not auto-approve on API error
-    const result = await tw.verifyReply(text, originalId, user?.twitter, 20).catch(() => ({
-      verified: false,
-      reason: 'Twitter API error. Please try again in a moment.',
-    }));
-
-    if (result.verified) {
-      await autoAward(ctx, userId, task, text);
-    } else {
-      await ctx.replyWithHTML(`❌ <b>Not Verified</b>\n\n${result.reason}`);
-    }
-    return;
-  }
-
-  // ── Quote URL submission ───────────────────────────────────────────────────
-  if (s.step === 'awaiting_quote_url') {
-    session.clearSession(userId);
-    const task = store.getTask(s.taskId);
-    if (!task) return ctx.replyWithHTML('❌ Task no longer exists.');
-
-    if (!tw.isTweetUrl(text)) {
-      return ctx.replyWithHTML('❌ Invalid URL. Send your quote tweet link (x.com or twitter.com).');
-    }
-
-    await ctx.replyWithHTML('<i>Verifying quote tweet...</i>');
-    const user = store.getUser(userId);
-    const originalId = tw.extractTweetId(task.link);
-
-    // FIXED: do not auto-approve on API error
-    const result = await tw.verifyQuote(text, originalId, user?.twitter, 20).catch(() => ({
-      verified: false,
-      reason: 'Twitter API error. Please try again in a moment.',
-    }));
-
-    if (result.verified) {
-      await autoAward(ctx, userId, task, text);
-    } else {
-      await ctx.replyWithHTML(`❌ <b>Not Verified</b>\n\n${result.reason}`);
-    }
-    return;
-  }
-
-  // ── Settings flows ─────────────────────────────────────────────────────────
-  if (s.step === 'awaiting_twitter') {
-    session.clearSession(userId);
-    const user = store.getUser(userId);
-    if (user) user.twitter = text.startsWith('@') ? text : `@${text}`;
-    return ctx.replyWithHTML(`✅ Twitter set: <b>${user.twitter}</b>`, mainMenuKeyboard());
-  }
-
-  if (s.step === 'awaiting_wallet') {
-    session.clearSession(userId);
-    const user = store.getUser(userId);
-    if (user) user.wallet = text;
-    return ctx.replyWithHTML(`✅ Wallet updated:\n<code>${text}</code>`, mainMenuKeyboard());
-  }
-
-  if (s.step === 'awaiting_discord') {
-    session.clearSession(userId);
-    const user = store.getUser(userId);
-    if (user) user.discord = text;
-    return ctx.replyWithHTML(`✅ Discord set: <b>${text}</b>`, mainMenuKeyboard());
-  }
-
-  return next();
-}
-
-// ═══════════════════════════════════════════════
-//  INLINE CALLBACKS
-// ═══════════════════════════════════════════════
-
-async function handleSetTwitter(ctx) {
-  await ctx.answerCbQuery();
-  session.setSession(ctx.from.id, { step: 'awaiting_twitter' });
-  await ctx.replyWithHTML(`🐦 <b>Set Twitter Handle</b>\n\nSend your @handle:`, cancelKeyboard());
+async function handleConnectTwitterOAuth(ctx) {
+ if (ctx.callbackQuery) await ctx.answerCbQuery();
+ const userId = ctx.from.id;
+ const tokens = getTokens(userId);
+ const user = store.getUser(userId);
+ if (tokens?.access_token && user?.twitter) {
+ return ctx.replyWithHTML(
+` <b>Twitter Already Connected</b>\n\n@${user.twitter} is linked to your account.\n<i>Your Twitter account can only be connected once and cannot be changed by you. Contact an admin if you need it updated.</i>`
+ );
+ }
+ try {
+ const url = await generateAuthUrl(userId);
+ await ctx.replyWithHTML(
+`<b>Connect Twitter via OAuth</b>\n\nTap the button below to authorize Momentum Hub to verify your Twitter actions.\n\n <i>Your Twitter account can only be connected once and cannot be changed by you. Contact an admin if you need it updated.</i>`,
+ oauthConnectKeyboard(url)
+ );
+ } catch (e) {
+ await ctx.replyWithHTML(`<b>Error generating OAuth link:</b> ${e.message}\n\nMake sure TWITTER_CLIENT_ID and TWITTER_CALLBACK_URL are correctly set.`);
+ }
 }
 
 async function handleSetWallet(ctx) {
-  await ctx.answerCbQuery();
-  session.setSession(ctx.from.id, { step: 'awaiting_wallet' });
-  await ctx.replyWithHTML(`👛 <b>Set Wallet</b>\n\nSend your wallet address:`, cancelKeyboard());
+ await ctx.answerCbQuery();
+ session.setSession(ctx.from.id, { step: 'awaiting_wallet' });
+ await ctx.replyWithHTML(`<b>Set Wallet</b>\n\nSend your wallet address:`, cancelKeyboard());
 }
 
 async function handleSetDiscord(ctx) {
-  await ctx.answerCbQuery();
-  session.setSession(ctx.from.id, { step: 'awaiting_discord' });
-  await ctx.replyWithHTML(`💬 <b>Set Discord</b>\n\nSend your Discord username:`, cancelKeyboard());
+ await ctx.answerCbQuery();
+ session.setSession(ctx.from.id, { step: 'awaiting_discord' });
+ await ctx.replyWithHTML(`<b>Set Discord</b>\n\nSend your Discord username:`, cancelKeyboard());
 }
 
 async function handleCancelFlow(ctx) {
-  await ctx.answerCbQuery('Cancelled.');
-  session.clearSession(ctx.from.id);
-  await ctx.deleteMessage().catch(() => {});
+ await ctx.answerCbQuery('Cancelled.');
+ session.clearSession(ctx.from.id);
+ await ctx.deleteMessage().catch(() => {});
 }
 
-// ═══════════════════════════════════════════════
-//  REGISTER
-// ═══════════════════════════════════════════════
+// ── Register ──────────────────────────────────────────────────────────────────
 
 function register(bot) {
-  bot.on(['message'], handleSessionInput);
+ bot.on(['message'], handleSessionInput);
 
-  bot.start(handleStart);
-  bot.command('leaderboard', handleLeaderboard);
-  bot.command('profile',     handleMyProfile);
-  bot.command('help',        handleHelp);
+ bot.start(handleStart);
+ bot.command('leaderboard', handleLeaderboard);
+ bot.command('profile', handleMyProfile);
+ bot.command('help', handleHelp);
 
-  bot.hears('🎯 Tasks',       handleTasksMenu);
-  bot.hears('⚡ Raids',       handleRaidsMenu);
-  bot.hears('🏆 Leaderboard', handleLeaderboard);
-  bot.hears('👤 My Profile',  handleMyProfile);
-  bot.hears('⚙️ Settings',    handleSettings);
-  bot.hears('❓ Help',        handleHelp);
+ bot.hears('Tasks', handleTasksMenu);
+ bot.hears('Raids', handleRaidsMenu);
+ bot.hears('Leaderboard', handleLeaderboard);
+ bot.hears('My Profile', handleMyProfile);
+ bot.hears('Settings', handleSettings);
+ bot.hears('Help', handleHelp);
 
-  bot.action('set_twitter',     handleSetTwitter);
-  bot.action('set_wallet',      handleSetWallet);
-  bot.action('set_discord',     handleSetDiscord);
-  bot.action('refresh_profile', ctx => handleMyProfile(ctx));
-  bot.action('close_msg',       async ctx => { await ctx.answerCbQuery(); await ctx.deleteMessage().catch(() => {}); });
-  bot.action('cancel_flow',     handleCancelFlow);
+ bot.action('connect_twitter_oauth', handleConnectTwitterOAuth);
+ bot.action('open_settings', async ctx => { await ctx.answerCbQuery(); return handleSettings(ctx); });
+ bot.action('set_wallet', handleSetWallet);
+ bot.action('set_discord', handleSetDiscord);
+ bot.action('refresh_profile', ctx => handleMyProfile(ctx));
+ bot.action('close_msg', async ctx => { await ctx.answerCbQuery(); await ctx.deleteMessage().catch(() => {}); });
+ bot.action('cancel_flow', handleCancelFlow);
 
-  bot.action(/^view_task_(\d+)$/, handleViewTask);
-  bot.action(/^do_submit_(\d+)$/, handleDoSubmit);
+ bot.action(/^view_task_(\d+)$/, handleViewTask);
+ bot.action(/^do_submit_(\d+)$/, handleDoSubmit);
 }
 
 module.exports = { register };

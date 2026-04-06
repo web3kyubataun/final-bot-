@@ -1,12 +1,6 @@
-// Stores bot username after launch — set from index.js
-let botUsername = '';
+let _username = null;
 
-function setBotUsername(username) {
-  botUsername = username;
-}
-
-function getBotUsername() {
-  return botUsername;
-}
-
-module.exports = { setBotUsername, getBotUsername };
+module.exports = {
+ getBotUsername: () => _username,
+ setBotUsername: (name) => { _username = name; },
+};

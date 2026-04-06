@@ -1,223 +1,215 @@
+/**
+ * sheets.js — Google Sheets multi-tab integration
+ *
+ * Tabs: Users | Tasks | Raids | Leaderboard
+ * Creates tabs automatically if they don't exist.
+ * All operations are no-ops if GOOGLE_SERVICE_ACCOUNT is not configured.
+ */
+
 const { google } = require('googleapis');
-const config = require('../config');
-const fs = require('fs');
 
 let auth = null;
-let _serviceAccountEmail = null;
+let sheetsApi = null;
 
-function getAuth() {
-  if (auth) return auth;
-
-  let credentials;
-
-  if (config.GOOGLE_SERVICE_ACCOUNT_JSON) {
-    try {
-      credentials = JSON.parse(config.GOOGLE_SERVICE_ACCOUNT_JSON);
-    } catch (e) {
-      throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON. Paste the entire file content.');
-    }
-  } else if (config.GOOGLE_SERVICE_ACCOUNT_PATH && fs.existsSync(config.GOOGLE_SERVICE_ACCOUNT_PATH)) {
-    credentials = JSON.parse(fs.readFileSync(config.GOOGLE_SERVICE_ACCOUNT_PATH, 'utf-8'));
-  } else {
-    throw new Error('Google credentials not found. Set GOOGLE_SERVICE_ACCOUNT_JSON in .env');
-  }
-
-  _serviceAccountEmail = credentials.client_email || null;
-
-  auth = new google.auth.GoogleAuth({
-    credentials,
-    scopes: [
-      'https://www.googleapis.com/auth/spreadsheets',
-      'https://www.googleapis.com/auth/drive',
-    ],
-  });
-  return auth;
-}
-
-/** Returns the service account email (parsed from credentials). */
-function getServiceAccountEmail() {
-  if (_serviceAccountEmail) return _serviceAccountEmail;
-  try {
-    getAuth(); // triggers credential parsing
-    return _serviceAccountEmail;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Try to create a new Google Sheet automatically.
- * This REQUIRES:
- *   - Google Sheets API enabled
- *   - Google Drive API enabled
- *   - Service account with sufficient Drive permissions
- *
- * If it fails, instruct the user to create the sheet manually and use /setsheet.
- */
-async function createGroupSheet(groupName, emailsToShare = []) {
-  const authClient = await getAuth().getClient();
-  const sheets = google.sheets({ version: 'v4', auth: authClient });
-  const drive  = google.drive({ version: 'v3', auth: authClient });
-
-  const res = await sheets.spreadsheets.create({
-    requestBody: {
-      properties: { title: `${groupName} - Bot Tracker` },
-      sheets: [
-        {
-          properties: { title: 'Submissions', sheetId: 0, index: 0 },
-          data: [{
-            startRow: 0, startColumn: 0,
-            rowData: [{
-              values: ['Timestamp','UserID','Username','Task','Proof','Status','Points'].map(v => ({
-                userEnteredValue: { stringValue: v },
-                userEnteredFormat: { textFormat: { bold: true }, backgroundColor: { red: 0.2, green: 0.6, blue: 0.9 } },
-              })),
-            }],
-          }],
-        },
-        {
-          properties: { title: 'Users', sheetId: 1, index: 1 },
-          data: [{
-            startRow: 0, startColumn: 0,
-            rowData: [{
-              values: ['UserID','Username','Points','Twitter','Wallet','JoinedAt'].map(v => ({
-                userEnteredValue: { stringValue: v },
-                userEnteredFormat: { textFormat: { bold: true }, backgroundColor: { red: 0.2, green: 0.6, blue: 0.9 } },
-              })),
-            }],
-          }],
-        },
-      ],
-    },
-  });
-
-  const spreadsheetId = res.data.spreadsheetId;
-
-  const allEmails = [];
-  if (config.DEFAULT_SHARE_EMAIL) allEmails.push(config.DEFAULT_SHARE_EMAIL);
-  for (const em of emailsToShare) {
-    if (em && !allEmails.includes(em)) allEmails.push(em);
-  }
-
-  for (const email of allEmails) {
-    try {
-      await drive.permissions.create({
-        fileId: spreadsheetId,
-        requestBody: { type: 'user', role: 'writer', emailAddress: email },
-        sendNotificationEmail: false,
-      });
-    } catch (e) {
-      console.error(`Share failed (${email}):`, e.message);
-    }
-  }
-
-  return spreadsheetId;
-}
-
-/**
- * Setup a manually-created sheet (creates the header rows).
- * Use when auto-creation fails — user creates the sheet, shares it with the
- * service account email, then calls /setsheet.
- */
-async function setupManualSheet(spreadsheetId) {
-  const authClient = await getAuth().getClient();
-  const sheets = google.sheets({ version: 'v4', auth: authClient });
-
-  // Write headers in Submissions tab
-  await sheets.spreadsheets.values.update({
-    spreadsheetId,
-    range: 'Sheet1!A1:G1',
-    valueInputOption: 'RAW',
-    requestBody: {
-      values: [['Timestamp','UserID','Username','Task','Proof','Status','Points']],
-    },
-  });
-
-  // Try to rename Sheet1 → Submissions and add a Users tab
-  try {
-    const meta = await sheets.spreadsheets.get({ spreadsheetId });
-    const sheet1Id = meta.data.sheets[0].properties.sheetId;
-    const requests = [
-      { updateSheetProperties: { properties: { sheetId: sheet1Id, title: 'Submissions' }, fields: 'title' } },
-      { addSheet: { properties: { title: 'Users' } } },
-    ];
-    await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests } });
-
-    // Add Users header
-    await sheets.spreadsheets.values.update({
-      spreadsheetId,
-      range: 'Users!A1:F1',
-      valueInputOption: 'RAW',
-      requestBody: { values: [['UserID','Username','Points','Twitter','Wallet','JoinedAt']] },
-    });
-  } catch { /* sheet may already be renamed or tab exists — ignore */ }
-}
-
-async function appendSubmission(spreadsheetId, { timestamp, userId, username, task, proof, status, points }) {
-  const authClient = await getAuth().getClient();
-  const sheets = google.sheets({ version: 'v4', auth: authClient });
-  await sheets.spreadsheets.values.append({
-    spreadsheetId,
-    range: 'Submissions!A:G',
-    valueInputOption: 'RAW',
-    requestBody: { values: [[timestamp, userId, username, task, proof, status, points]] },
-  });
-}
-
-async function upsertUser(spreadsheetId, { userId, username, points, twitter, wallet, joinedAt }) {
-  const authClient = await getAuth().getClient();
-  const sheets = google.sheets({ version: 'v4', auth: authClient });
-  const res = await sheets.spreadsheets.values.get({ spreadsheetId, range: 'Users!A:A' });
-  const rows = res.data.values || [];
-  const rowIndex = rows.findIndex(r => r[0] == userId);
-  const rowData  = [userId, username, points, twitter || '', wallet || '', joinedAt];
-
-  if (rowIndex >= 1) {
-    await sheets.spreadsheets.values.update({
-      spreadsheetId,
-      range: `Users!A${rowIndex + 1}`,
-      valueInputOption: 'RAW',
-      requestBody: { values: [rowData] },
-    });
-  } else {
-    await sheets.spreadsheets.values.append({
-      spreadsheetId,
-      range: 'Users!A:F',
-      valueInputOption: 'RAW',
-      requestBody: { values: [rowData] },
-    });
-  }
-}
-
-async function updateSubmissionStatus(spreadsheetId, userId, taskTitle, newStatus) {
-  const authClient = await getAuth().getClient();
-  const sheets = google.sheets({ version: 'v4', auth: authClient });
-  const res = await sheets.spreadsheets.values.get({ spreadsheetId, range: 'Submissions!A:G' });
-  const rows = res.data.values || [];
-  for (let i = 1; i < rows.length; i++) {
-    if (rows[i][1] == userId && rows[i][3] === taskTitle && rows[i][5] === 'pending') {
-      await sheets.spreadsheets.values.update({
-        spreadsheetId,
-        range: `Submissions!F${i + 1}`,
-        valueInputOption: 'RAW',
-        requestBody: { values: [[newStatus]] },
-      });
-      break;
-    }
-  }
-}
-
-async function shareSheet(spreadsheetId, email) {
-  const authClient = await getAuth().getClient();
-  const drive = google.drive({ version: 'v3', auth: authClient });
-  await drive.permissions.create({
-    fileId: spreadsheetId,
-    requestBody: { type: 'user', role: 'writer', emailAddress: email },
-    sendNotificationEmail: false,
-  });
-}
-
-module.exports = {
-  createGroupSheet, setupManualSheet, appendSubmission,
-  upsertUser, updateSubmissionStatus, shareSheet, getServiceAccountEmail,
+const TAB_HEADERS = {
+ Users: ['Telegram ID', 'Username', 'First Name', 'Twitter Handle', 'Wallet', 'Discord', 'Points', 'Rank', 'Tasks Completed', 'Raids Completed', 'Date Joined'],
+ Tasks: ['User Telegram ID', 'Twitter Handle', 'Task ID', 'Task Title', 'Task Type', 'Points Awarded', 'Timestamp'],
+ Raids: ['User Telegram ID', 'Twitter Handle', 'Raid ID', 'Raid Title', 'Task Type', 'Points Awarded', 'Raid Expires', 'Timestamp'],
+ Leaderboard: ['Rank', 'Username', 'Twitter Handle', 'Points'],
 };
+
+function init() {
+ if (sheetsApi) return sheetsApi;
+ const raw = process.env.GOOGLE_SERVICE_ACCOUNT;
+ if (!raw) return null;
+ try {
+ const creds = typeof raw === 'string' ? JSON.parse(raw) : raw;
+ auth = new google.auth.GoogleAuth({
+ credentials: creds,
+ scopes: ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive'],
+ });
+ sheetsApi = google.sheets({ version: 'v4', auth });
+ return sheetsApi;
+ } catch (e) {
+ console.warn('[Sheets] Failed to init Google Auth:', e.message);
+ return null;
+ }
+}
+
+// Ensure a tab exists; create it if it doesn't. Returns true if ready.
+async function ensureTab(api, sheetId, tabName) {
+ try {
+ const meta = await api.spreadsheets.get({ spreadsheetId: sheetId });
+ const exists = meta.data.sheets?.some(s => s.properties?.title === tabName);
+ if (!exists) {
+ await api.spreadsheets.batchUpdate({
+ spreadsheetId: sheetId,
+ requestBody: {
+ requests: [{ addSheet: { properties: { title: tabName } } }],
+ },
+ });
+ // Write headers
+ await api.spreadsheets.values.update({
+ spreadsheetId: sheetId,
+ range:`${tabName}!A1`,
+ valueInputOption: 'USER_ENTERED',
+ requestBody: { values: [TAB_HEADERS[tabName] || []] },
+ });
+ }
+ return true;
+ } catch (e) {
+ console.error(`[Sheets] ensureTab(${tabName}) failed:`, e.message);
+ return false;
+ }
+}
+
+// ── Append a single row to a tab ─────────────────────────────────────────────
+
+async function appendRow(sheetId, tabName, row) {
+ const api = init();
+ if (!api || !sheetId || sheetId === 'none') return;
+ try {
+ await ensureTab(api, sheetId, tabName);
+ await api.spreadsheets.values.append({
+ spreadsheetId: sheetId,
+ range:`${tabName}!A:Z`,
+ valueInputOption: 'USER_ENTERED',
+ requestBody: { values: [row] },
+ });
+ } catch (e) {
+ console.error(`[Sheets] appendRow(${tabName}) failed:`, e.message);
+ }
+}
+
+// ── Overwrite a tab completely (used for Users and Leaderboard) ───────────────
+
+async function overwriteTab(sheetId, tabName, rows) {
+ const api = init();
+ if (!api || !sheetId || sheetId === 'none') return;
+ try {
+ await ensureTab(api, sheetId, tabName);
+ await api.spreadsheets.values.clear({
+ spreadsheetId: sheetId,
+ range:`${tabName}!A:Z`,
+ });
+ const allRows = [TAB_HEADERS[tabName] || [], ...rows];
+ await api.spreadsheets.values.update({
+ spreadsheetId: sheetId,
+ range:`${tabName}!A1`,
+ valueInputOption: 'USER_ENTERED',
+ requestBody: { values: allRows },
+ });
+ } catch (e) {
+ console.error(`[Sheets] overwriteTab(${tabName}) failed:`, e.message);
+ }
+}
+
+// ── PUBLIC API ────────────────────────────────────────────────────────────────
+
+/**
+ * Log a task submission.
+ */
+async function logTask(sheetId, { userId, twitter, taskId, taskTitle, taskType, points }) {
+ const ts = new Date().toISOString();
+ await appendRow(sheetId, 'Tasks', [String(userId), twitter || '', String(taskId), taskTitle || '', taskType || '', points || 0, ts]);
+}
+
+/**
+ * Log a raid submission.
+ */
+async function logRaid(sheetId, { userId, twitter, taskId, taskTitle, taskType, points, raidExpiry }) {
+ const ts = new Date().toISOString();
+ await appendRow(sheetId, 'Raids', [String(userId), twitter || '', String(taskId), taskTitle || '', taskType || '', points || 0, raidExpiry || '', ts]);
+}
+
+/**
+ * Refresh the Users tab with all current user data.
+ */
+async function refreshUsers(sheetId, users) {
+ const sorted = [...users].sort((a, b) => (b.points || 0) - (a.points || 0));
+ const rows = sorted.map((u, i) => [
+ u.id,
+ u.username || '',
+ u.firstName || '',
+ u.twitter ?`@${u.twitter}` : '',
+ u.wallet || '',
+ u.discord || '',
+ u.points || 0,
+ i + 1,
+ u.tasksCompleted || 0,
+ u.raidsCompleted || 0,
+ u.joinedAt || '',
+ ]);
+ await overwriteTab(sheetId, 'Users', rows);
+}
+
+/**
+ * Refresh the Leaderboard tab with top 50 users.
+ */
+async function refreshLeaderboard(sheetId, users) {
+ const top50 = [...users]
+ .filter(u => !u.banned)
+ .sort((a, b) => (b.points || 0) - (a.points || 0))
+ .slice(0, 50);
+ const rows = top50.map((u, i) => [
+ i + 1,
+ u.username ?`@${u.username}` :`id:${u.id}`,
+ u.twitter ?`@${u.twitter}` : '',
+ u.points || 0,
+ ]);
+ await overwriteTab(sheetId, 'Leaderboard', rows);
+}
+
+/**
+ * Share a sheet with an email address (editor access).
+ */
+async function shareSheet(sheetId, email) {
+ if (!sheetId || sheetId === 'none' || !email) return;
+ try {
+ const drive = google.drive({ version: 'v3', auth });
+ if (!auth) return;
+ await drive.permissions.create({
+ fileId: sheetId,
+ requestBody: { role: 'writer', type: 'user', emailAddress: email },
+ });
+ } catch (e) {
+ console.error('[Sheets] shareSheet failed:', e.message);
+ }
+}
+
+/**
+ * Helper: fire-and-forget log on task/raid completion.
+ * Handles all four tabs (Users, Tasks/Raids, Leaderboard).
+ */
+async function onCompletion(sheetId, { user, task, isRaid }) {
+ if (!sheetId || sheetId === 'none') return;
+ const store = require('../store');
+ try {
+ const allUsers = store.getAllUsers();
+ if (isRaid) {
+ await Promise.all([
+ logRaid(sheetId, {
+ userId: user.id, twitter: user.twitter,
+ taskId: task.id, taskTitle: task.title, taskType: task.taskType,
+ points: task.reward, raidExpiry: task.expiresAt,
+ }),
+ refreshUsers(sheetId, allUsers),
+ refreshLeaderboard(sheetId, allUsers),
+ ]);
+ } else {
+ await Promise.all([
+ logTask(sheetId, {
+ userId: user.id, twitter: user.twitter,
+ taskId: task.id, taskTitle: task.title, taskType: task.taskType,
+ points: task.reward,
+ }),
+ refreshUsers(sheetId, allUsers),
+ refreshLeaderboard(sheetId, allUsers),
+ ]);
+ }
+ } catch (e) {
+ console.error('[Sheets] onCompletion failed:', e.message);
+ }
+}
+
+module.exports = { logTask, logRaid, refreshUsers, refreshLeaderboard, shareSheet, onCompletion };
