@@ -5,24 +5,46 @@
  * Uses better-sqlite3 so every function stays SYNCHRONOUS — no caller changes needed.
  * Data survives bot restarts and Railway redeploys (via Railway Volume at /data).
  *
- * Set DB_PATH env var to point to the volume:
- *   Local:   ./data/bot.db   (default)
- *   Railway: /data/bot.db    (set DB_PATH=/data/bot.db in Railway env)
+ * DB_PATH resolution (checked in order):
+ *   1. DB_PATH env var (e.g. /data/bot.db on Railway with a Volume)
+ *   2. /tmp/bot.db    — always writable fallback (ephemeral, lost on restart)
+ *
+ * To make data fully persistent on Railway:
+ *   - Add a Volume mounted at /data in Railway dashboard
+ *   - Set env var DB_PATH=/data/bot.db in Railway Variables
  */
 
 const Database = require('better-sqlite3');
 const path = require('path');
 const fs   = require('fs');
 
-const DB_PATH = process.env.DB_PATH || path.join(process.cwd(), 'data', 'bot.db');
+function _resolvePath() {
+  if (process.env.DB_PATH) return process.env.DB_PATH;
+  // /tmp is always writable in any container environment
+  return '/tmp/bot.db';
+}
+
+const DB_PATH = _resolvePath();
 
 let _db = null;
 
 function getDb() {
   if (_db) return _db;
   const dir = path.dirname(DB_PATH);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  _db = new Database(DB_PATH);
+  try {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  } catch (e) {
+    // If we can't create the directory (e.g. read-only volume not mounted yet),
+    // fall back to /tmp which is always writable
+    console.warn(`[Store] Cannot create dir ${dir}: ${e.message}. Falling back to /tmp/bot.db`);
+    return _openDb('/tmp/bot.db');
+  }
+  return _openDb(DB_PATH);
+}
+
+function _openDb(dbPath) {
+  console.log(`[Store] Opening database at ${dbPath}`);
+  _db = new Database(dbPath);
   _db.pragma('journal_mode = WAL');
   _db.pragma('foreign_keys = ON');
   _initSchema(_db);
