@@ -1,5 +1,6 @@
 /**
- * In-memory store — replace with SQLite/MongoDB for persistence
+ * store.js — In-memory data store
+ * Replace with SQLite/MongoDB for persistence across restarts.
  */
 
 const store = {
@@ -8,13 +9,13 @@ const store = {
   tasks: {},
   submissions: {},
   userSubmissions: {},
-  adminContext: {},   // userId -> groupId (which group each admin is currently managing in DM)
+  adminContext: {},
   taskCounter: 0,
   submissionCounter: 0,
 };
 
 // ═══════════════════════════════════════════════
-//  ADMIN CONTEXT (for DM-based admin control)
+//  ADMIN CONTEXT
 // ═══════════════════════════════════════════════
 
 function setAdminContext(userId, groupId) {
@@ -89,7 +90,6 @@ function setGroupMeta(groupId, meta) {
   if (g) Object.assign(g, meta);
 }
 
-/** Get groups where userId is admin or owner */
 function getGroupsForAdmin(userId) {
   const { isOwner } = require('./middleware/auth');
   const uid = String(userId);
@@ -126,17 +126,17 @@ function getUser(userId) {
 }
 
 function getAllUsers() {
-  return Object.entries(store.users).map(([id, data]) => ({ id, ...data }));
+  return Object.entries(store.users).map(([id, u]) => ({ id, ...u }));
 }
 
 function banUser(userId) {
-  const u = store.users[String(userId)];
+  const u = store.users[String(userId).replace('@', '')];
   if (u) { u.banned = true; return true; }
   return false;
 }
 
 function unbanUser(userId) {
-  const u = store.users[String(userId)];
+  const u = store.users[String(userId).replace('@', '')];
   if (u) { u.banned = false; return true; }
   return false;
 }
@@ -150,18 +150,25 @@ function addPoints(userId, points) {
 //  TASKS
 // ═══════════════════════════════════════════════
 
-function createTask(groupId, title, link, reward, type, buttonLabel) {
+/**
+ * platform: 'twitter' | 'telegram'
+ * taskType: 'like' | 'retweet' | 'follow' | 'comment' | 'quote'
+ *           'join' | 'react' | 'send'
+ */
+function createTask(groupId, title, link, reward, type, buttonLabel, platform, taskType) {
   const id = ++store.taskCounter;
   store.tasks[id] = {
     id,
     groupId: String(groupId),
     title,
-    link,
+    link: link || '',
     reward: parseInt(reward) || 0,
-    type,
+    type: type || 'task',
     buttonLabel: buttonLabel || null,
-    createdAt: new Date().toISOString(),
+    platform: platform || 'twitter',
+    taskType: taskType || 'like',
     active: true,
+    createdAt: new Date().toISOString(),
   };
   return store.tasks[id];
 }
@@ -176,12 +183,10 @@ function deactivateTask(taskId) {
   return false;
 }
 
-function getTasksForGroup(groupId, type = null) {
-  return Object.values(store.tasks).filter(t => {
-    if (t.groupId !== String(groupId)) return false;
-    if (type && t.type !== type) return false;
-    return t.active;
-  });
+function getTasksForGroup(groupId, type) {
+  return Object.values(store.tasks).filter(
+    t => t.groupId === String(groupId) && t.active && (!type || t.type === type)
+  );
 }
 
 function getAllTasksForGroup(groupId) {
@@ -201,16 +206,16 @@ function createSubmission(userId, username, groupId, taskId, taskTitle, proof, p
     groupId: String(groupId),
     taskId,
     taskTitle,
-    proof,
-    proofType: proofType || 'text', // 'text' | 'photo'
+    proof: proof || '',
+    points,
+    proofType: proofType || 'text',
     proofFileId: proofFileId || null,
     status: 'pending',
-    points,
     createdAt: new Date().toISOString(),
   };
-  const uid = String(userId);
-  if (!store.userSubmissions[uid]) store.userSubmissions[uid] = new Set();
-  store.userSubmissions[uid].add(`${groupId}:${taskId}`);
+  const key = `${groupId}:${taskId}`;
+  if (!store.userSubmissions[String(userId)]) store.userSubmissions[String(userId)] = new Set();
+  store.userSubmissions[String(userId)].add(key);
   return store.submissions[id];
 }
 
@@ -235,35 +240,29 @@ function rejectSubmission(subId) {
   return sub;
 }
 
-function getSubmissionsForGroup(groupId, status = null) {
-  return Object.values(store.submissions).filter(s => {
-    if (s.groupId !== String(groupId)) return false;
-    if (status && s.status !== status) return false;
-    return true;
-  });
+function getSubmissionsForGroup(groupId, status) {
+  return Object.values(store.submissions).filter(
+    s => s.groupId === String(groupId) && (!status || s.status === status)
+  );
 }
 
 // ═══════════════════════════════════════════════
-//  ADMINS
+//  ADMIN MANAGEMENT
 // ═══════════════════════════════════════════════
 
 function addAdmin(groupId, userId) {
   const g = store.groups[String(groupId)];
-  if (g) { g.admins.add(String(userId)); return true; }
-  return false;
+  if (g) g.admins.add(String(userId));
 }
 
 function removeAdmin(groupId, userId) {
   const g = store.groups[String(groupId)];
-  if (g) { g.admins.delete(String(userId)); return true; }
-  return false;
+  if (g) g.admins.delete(String(userId));
 }
 
 function isAdmin(groupId, userId) {
-  const { isOwner } = require('./middleware/auth');
-  if (isOwner(userId)) return true;
   const g = store.groups[String(groupId)];
-  return g ? g.admins.has(String(userId)) : false;
+  return !!g?.admins.has(String(userId));
 }
 
 // ═══════════════════════════════════════════════
@@ -286,31 +285,31 @@ function setAccessMode(groupId, mode) {
 
 function getLeaderboard(limit = 10) {
   return Object.entries(store.users)
-    .filter(([, u]) => !u.banned)
-    .map(([id, u]) => ({ id, username: u.username, points: u.points || 0 }))
+    .map(([id, u]) => ({ id, username: u.username, points: u.points || 0, banned: u.banned }))
+    .filter(u => !u.banned)
     .sort((a, b) => b.points - a.points)
     .slice(0, limit);
 }
 
 function getGroupStats(groupId) {
-  const tasks = getAllTasksForGroup(groupId);
-  const subs = getSubmissionsForGroup(groupId);
+  const gid = String(groupId);
+  const tasks = Object.values(store.tasks).filter(t => t.groupId === gid);
+  const subs  = Object.values(store.submissions).filter(s => s.groupId === gid);
+  const users = Object.values(store.users);
   return {
-    totalTasks: tasks.filter(t => t.type === 'task').length,
-    totalRaids: tasks.filter(t => t.type === 'raid').length,
-    activeTasks: tasks.filter(t => t.active && t.type === 'task').length,
-    activeRaids: tasks.filter(t => t.active && t.type === 'raid').length,
-    totalSubmissions: subs.length,
-    pendingSubmissions: subs.filter(s => s.status === 'pending').length,
+    activeTasks:         tasks.filter(t => t.active && t.type === 'task').length,
+    totalTasks:          tasks.filter(t => t.type === 'task').length,
+    activeRaids:         tasks.filter(t => t.active && t.type === 'raid').length,
+    totalRaids:          tasks.filter(t => t.type === 'raid').length,
+    pendingSubmissions:  subs.filter(s => s.status === 'pending').length,
     approvedSubmissions: subs.filter(s => s.status === 'approved').length,
     rejectedSubmissions: subs.filter(s => s.status === 'rejected').length,
-    totalUsers: getAllUsers().length,
-    bannedUsers: getAllUsers().filter(u => u.banned).length,
+    totalUsers:          users.length,
+    bannedUsers:         users.filter(u => u.banned).length,
   };
 }
 
 module.exports = {
-  store,
   setAdminContext, getAdminContext, clearAdminContext,
   addGroup, removeGroup, getGroup, getAllGroups, isGroupRegistered,
   setGroupTopic, setGroupMeta, getGroupsForAdmin,

@@ -82,7 +82,7 @@ function registerHandlers(bot) {
           return;
         }
         // User: quote/comment link submission
-        if (session.state === 'waiting_quote_link' || session.state === 'waiting_comment_link') {
+        if (session.state === 'waiting_comment_link' || session.state === 'waiting_quote_link' || session.state === 'waiting_retweet_link') {
           await handleQuoteOrCommentLink(ctx, session).catch(console.error);
           return;
         }
