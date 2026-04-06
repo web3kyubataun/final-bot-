@@ -4,10 +4,17 @@
  * Stores OAuth tokens and PKCE states in /tmp/oauth_tokens.json and /tmp/oauth_states.json
  */
 
-const fs = require('fs');
+const fs   = require('fs');
+const path = require('path');
 
-const TOKENS_PATH = process.env.OAUTH_TOKENS_PATH || '/tmp/oauth_tokens.json';
-const STATES_PATH = process.env.OAUTH_STATES_PATH  || '/tmp/oauth_states.json';
+// Store in ./data/ directory (project root) — survives restarts on most hosts.
+// Override via env vars for persistent disk mounts (e.g. Render Disks at /data).
+const DATA_DIR    = process.env.OAUTH_DATA_DIR || path.join(__dirname, '..', '..', 'data');
+const TOKENS_PATH = process.env.OAUTH_TOKENS_PATH || path.join(DATA_DIR, 'oauth_tokens.json');
+const STATES_PATH = process.env.OAUTH_STATES_PATH  || path.join(DATA_DIR, 'oauth_states.json');
+
+// Ensure data directory exists
+try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {}
 
 function readJson(filePath) {
   try { return JSON.parse(fs.readFileSync(filePath, 'utf8')); } catch { return {}; }

@@ -501,20 +501,39 @@ async function routeTaskAction(ctx, userId, task, user, actionType) {
     }
 
     case 'retweet': {
-      session.setSession(userId, {
-        step: 'awaiting_retweet_url',
-        taskId: task.id,
-        adminFlow: false,
-      });
-      await ctx.replyWithHTML(
-        `<b>Submit Your Retweet</b>\n` +
-        `${'─'.repeat(28)}\n` +
-        `1. Retweet this post: <a href="${task.link}">Open Tweet</a>\n` +
-        `2. Copy the URL of YOUR retweet\n` +
-        `3. Paste it here\n\n` +
-        `<i>Example: https://x.com/yourname/status/12345</i>`,
-        cancelKeyboard()
-      );
+      const rtTweetId = tw.extractTweetId(task.link);
+      if (!rtTweetId) {
+        return ctx.replyWithHTML(
+          `<b>Task Error</b>\n\nCould not extract tweet ID from task link. Contact an admin.`
+        );
+      }
+      await ctx.replyWithHTML(`<i>Checking your retweet via Twitter API...</i>`);
+      const rtResult = await tw.verifyRetweet(rtTweetId, user.twitter, userId).catch(() => ({
+        verified: false, apiError: true,
+        reason: 'Twitter API is temporarily unavailable. Please wait 30 seconds and try again.',
+      }));
+
+      if (rtResult.verified) {
+        await completeAction(ctx, userId, task, user, 'retweet');
+      } else if (rtResult.needsOAuth) {
+        await ctx.replyWithHTML(
+          `<b>Twitter Not Connected</b>\n\n${rtResult.reason}\n\n` +
+          `Go to <b>Settings → Connect Twitter via OAuth</b> first.`,
+          Markup.inlineKeyboard([[Markup.button.callback('⚙️ Open Settings', 'open_settings')]])
+        );
+      } else if (rtResult.apiError) {
+        await ctx.replyWithHTML(
+          `<b>Twitter API Error</b>\n\n${rtResult.reason}\n\n` +
+          `<i>Retweet the post first, then tap Verify again after 30 seconds.</i>`,
+          taskCardKeyboard(task.id, task.link, task.buttonLabel, 'retweet')
+        );
+      } else {
+        await ctx.replyWithHTML(
+          `<b>Not Verified</b>\n\n${rtResult.reason}\n\n` +
+          `<i>Retweet the post on Twitter, then tap Verify again.</i>`,
+          taskCardKeyboard(task.id, task.link, task.buttonLabel, 'retweet')
+        );
+      }
       break;
     }
 
@@ -680,39 +699,6 @@ async function handleSessionInput(ctx, next) {
     store.setUserField(userId, 'discord', text);
     session.clearSession(userId);
     return ctx.replyWithHTML(`Discord username saved: <b>${text}</b>`);
-  }
-
-  // ── Retweet URL submission ────────────────────────────────────────────────
-  if (s.step === 'awaiting_retweet_url') {
-    if (!text.startsWith('http')) {
-      return ctx.reply('Please send a valid URL starting with https://');
-    }
-    const task = store.getTask(s.taskId);
-    if (!task) { session.clearSession(userId); return ctx.reply('Task not found.'); }
-    const user = store.getUser(userId);
-    session.clearSession(userId);
-
-    await ctx.replyWithHTML(`<i>Verifying your retweet via Twitter API...</i>`);
-    const result = await tw.verifyRetweetUrl(text, tw.extractTweetId(task.link), user.twitter).catch(() => ({
-      verified: false, apiError: true,
-      reason: 'Twitter API is temporarily unavailable. Please wait 30 seconds and try again.',
-    }));
-
-    if (result.verified) {
-      return completeAction(ctx, userId, task, user, 'retweet');
-    } else if (result.apiError) {
-      return ctx.replyWithHTML(
-        `<b>Twitter API Error</b>\n\n${result.reason}\n\n` +
-        `<i>Tap Verify again after 30 seconds.</i>`,
-        taskCardKeyboard(task.id, task.link, task.buttonLabel, 'retweet')
-      );
-    } else {
-      return ctx.replyWithHTML(
-        `<b>Not Verified</b>\n\n${result.reason}\n\n` +
-        `<i>Make sure you retweeted the correct post and send YOUR retweet link.</i>`,
-        taskCardKeyboard(task.id, task.link, task.buttonLabel, 'retweet')
-      );
-    }
   }
 
   // ── Comment / Quote URL submission ────────────────────────────────────────
