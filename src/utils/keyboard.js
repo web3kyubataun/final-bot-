@@ -2,6 +2,12 @@ const { Markup } = require('telegraf');
 
 const BOT_DM_LINK = 'https://t.me/MomentumHubBot';
 
+const TASK_TYPE_LABELS = {
+  follow: 'Follow', like: 'Like', retweet: 'Retweet',
+  comment: 'Comment', quote: 'Quote Tweet',
+  join: 'Join Channel/Group', react: 'React to Message', send: 'Send Message',
+};
+
 // ═══════════════════════════════════════════════
 //  USER KEYBOARDS
 // ═══════════════════════════════════════════════
@@ -58,15 +64,19 @@ function taskListKeyboard(tasks) {
   );
 }
 
-// Task card in DM
+// Task card in DM — handles combined task types (e.g. 'retweet,comment')
 function taskCardKeyboard(taskId, taskLink, btnLabel, taskType) {
+  const types = (taskType || '').split(',').map(t => t.trim()).filter(Boolean);
+  const needsUrl = types.some(t => ['comment', 'quote', 'retweet'].includes(t));
   const rows = [];
   if (taskLink) {
     rows.push([Markup.button.url(`Open Link: ${btnLabel || 'View'}`, taskLink)]);
   }
-  if (taskType === 'comment' || taskType === 'quote') {
+  if (types.includes('comment') || types.includes('quote')) {
     rows.push([Markup.button.callback('Submit My Tweet URL', `do_submit_${taskId}`)]);
-  } else if (taskType === 'join') {
+  } else if (types.includes('retweet') && needsUrl) {
+    rows.push([Markup.button.callback('Submit Retweet URL', `do_submit_${taskId}`)]);
+  } else if (types.includes('join')) {
     rows.push([Markup.button.callback('I Joined — Verify', `do_submit_${taskId}`)]);
   } else {
     rows.push([Markup.button.callback('I Did It — Verify', `do_submit_${taskId}`)]);
@@ -98,7 +108,7 @@ function approvalKeyboard(subId) {
 //  ADMIN KEYBOARDS
 // ═══════════════════════════════════════════════
 
-function adminMainKeyboard(groupName, canSwitch) {
+function adminMainKeyboard(groupName, showSwitch = false) {
   const rows = [
     [
       { text: 'Create Task', callback_data: 'admin_create_task' },
@@ -129,38 +139,38 @@ function adminMainKeyboard(groupName, canSwitch) {
       { text: 'Setup Topics', callback_data: 'admin_setup_topics' },
     ],
     [
-      { text: 'All Access', callback_data: 'admin_mode_all' },
+      { text: 'All', callback_data: 'admin_mode_all' },
       { text: 'Group Only', callback_data: 'admin_mode_group' },
       { text: 'Whitelist', callback_data: 'admin_mode_whitelist' },
     ],
     [
-      { text: 'Stats', callback_data: 'admin_stats' },
       { text: 'Add Sheet Email', callback_data: 'admin_add_email' },
       { text: 'Set Group Link', callback_data: 'admin_set_link' },
     ],
+    [
+      { text: 'Stats', callback_data: 'admin_stats' },
+      ...(showSwitch ? [{ text: 'Switch Group', callback_data: 'admin_switch_group' }] : []),
+    ],
+    [{ text: 'Close', callback_data: 'admin_close' }],
   ];
-  if (canSwitch) {
-    rows.push([{ text: 'Switch Group', callback_data: 'admin_switch_group' }]);
-  }
-  rows.push([{ text: 'Close', callback_data: 'admin_close' }]);
-  return { reply_markup: { inline_keyboard: rows } };
+  return Markup.inlineKeyboard(rows);
 }
 
 function taskDeleteKeyboard(tasks) {
   return Markup.inlineKeyboard(
-    tasks.map(t => [Markup.button.callback(`Delete: ${t.title}`, `del_task_${t.id}`)])
+    tasks.map(t => [Markup.button.callback(
+      `[${t.id}] ${t.title} (${t.type === 'raid' ? 'Raid' : 'Task'})`,
+      `del_task_${t.id}`
+    )])
   );
 }
 
 function topicsSetupKeyboard() {
-  const types = [
-    ['getstarted','Get Started'], ['notifications','Notifications'], ['tasks','Tasks'],
-    ['raids','Raids'], ['leaderboard','Leaderboard'], ['connect','Connect Twitter'],
-    ['announcements','Announcements'], ['submissions','Submissions'], ['general','General'],
-  ];
-  return Markup.inlineKeyboard(
-    types.map(([k, label]) => [Markup.button.callback(label, `set_topic_${k}`)])
-  );
+  const topics = ['getstarted','notifications','tasks','raids','leaderboard','connect','announcements','submissions','general'];
+  return Markup.inlineKeyboard([
+    ...topics.map(t => [Markup.button.callback(t, `set_topic_${t}`)]),
+    [Markup.button.callback('Cancel', 'cancel_flow')],
+  ]);
 }
 
 function groupSelectorKeyboard(groups) {
@@ -182,12 +192,10 @@ function platformSelectKeyboard(kind) {
 function taskTypeKeyboard(kind, platform) {
   const rows = [];
   if (platform === 'twitter') {
-    // Like and Follow are individual-only
     rows.push([
       Markup.button.callback('Follow (solo only)', `admin_tasktype_${kind}_follow`),
       Markup.button.callback('Like (solo only)', `admin_tasktype_${kind}_like`),
     ]);
-    // Retweet, Comment, Quote can be selected together via the multi-select raid flow
     rows.push([
       Markup.button.callback('Retweet', `admin_tasktype_${kind}_retweet`),
       Markup.button.callback('Comment', `admin_tasktype_${kind}_comment`),
@@ -206,9 +214,26 @@ function taskTypeKeyboard(kind, platform) {
   return Markup.inlineKeyboard(rows);
 }
 
+/**
+ * Combo-select keyboard for Retweet / Comment / Quote combination.
+ * Shows checkmarks on already-selected types. Admin presses Done when satisfied.
+ */
+function taskTypeComboKeyboard(kind, selectedTypes = []) {
+  const COMBINABLE = ['retweet', 'comment', 'quote'];
+  const rows = COMBINABLE.map(t => {
+    const selected = selectedTypes.includes(t);
+    const label = `${selected ? '✓ ' : ''}${TASK_TYPE_LABELS[t]}`;
+    return [Markup.button.callback(label, `admin_combo_toggle_${kind}_${t}`)];
+  });
+  rows.push([Markup.button.callback('Done — Set Title', 'admin_combo_done')]);
+  rows.push([Markup.button.callback('Cancel', 'cancel_flow')]);
+  return Markup.inlineKeyboard(rows);
+}
+
 module.exports = {
   mainMenuKeyboard, profileKeyboard, settingsKeyboard, connectTwitterKeyboard,
   taskListKeyboard, taskCardKeyboard, taskCardDMKeyboard, cancelKeyboard,
   approvalKeyboard, adminMainKeyboard, taskDeleteKeyboard,
-  topicsSetupKeyboard, groupSelectorKeyboard, platformSelectKeyboard, taskTypeKeyboard,
+  topicsSetupKeyboard, groupSelectorKeyboard, platformSelectKeyboard,
+  taskTypeKeyboard, taskTypeComboKeyboard,
 };
