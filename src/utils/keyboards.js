@@ -24,12 +24,12 @@ function mainAdminKeyboard() {
   return {
     inline_keyboard: [
       [
-        { text: ' Create Raid',    callback_data: 'admin:create_raid' },
-        { text: ' Active Raids',   callback_data: 'admin:active_raids' },
+        { text: '➕ Create Raid',    callback_data: 'admin:create_raid' },
+        { text: '📋 Active Raids',   callback_data: 'admin:active_raids' },
       ],
       [
-        { text: ' Leaderboard',    callback_data: 'admin:leaderboard' },
-        { text: ' Settings',       callback_data: 'admin:settings' },
+        { text: '🏆 Leaderboard',    callback_data: 'admin:leaderboard' },
+        { text: '⚙️ Settings',       callback_data: 'admin:settings' },
       ],
     ],
   };
@@ -49,8 +49,8 @@ function platformSelectKeyboard() {
   return {
     inline_keyboard: [
       [
-        { text: ' Twitter / X',    callback_data: 'admin:platform:twitter' },
-        { text: ' Telegram',        callback_data: 'admin:platform:telegram' },
+        { text: '🐦 Twitter / X',    callback_data: 'admin:platform:twitter' },
+        { text: '✈️ Telegram',        callback_data: 'admin:platform:telegram' },
       ],
     ],
   };
@@ -62,30 +62,30 @@ function taskTypeToggleKeyboard(selected = {}, platform = 'twitter') {
 
   if (platform === 'twitter') {
     rows.push([
-      { text: `${selected.follow  ? '' : ''} Follow`,       callback_data: 'task_toggle:follow' },
-      { text: `${selected.like    ? '' : ''} Like`,         callback_data: 'task_toggle:like' },
+      { text: `${selected.follow  ? '✅' : '⬜'} Follow`,       callback_data: 'task_toggle:follow' },
+      { text: `${selected.like    ? '✅' : '⬜'} Like`,         callback_data: 'task_toggle:like' },
     ]);
     rows.push([
-      { text: `${selected.retweet ? '' : ''} Retweet`,      callback_data: 'task_toggle:retweet' },
-      { text: `${selected.comment ? '' : ''} Comment`,      callback_data: 'task_toggle:comment' },
+      { text: `${selected.retweet ? '✅' : '⬜'} Retweet`,      callback_data: 'task_toggle:retweet' },
+      { text: `${selected.comment ? '✅' : '⬜'} Comment`,      callback_data: 'task_toggle:comment' },
     ]);
     rows.push([
-      { text: `${selected.quote   ? '' : ''} Quote Tweet`,  callback_data: 'task_toggle:quote' },
+      { text: `${selected.quote   ? '✅' : '⬜'} Quote Tweet`,  callback_data: 'task_toggle:quote' },
     ]);
   } else {
     // Telegram
     rows.push([
-      { text: `${selected.join  ? '' : ''} Join Channel/Group`, callback_data: 'task_toggle:join' },
+      { text: `${selected.join  ? '✅' : '⬜'} Join Channel/Group`, callback_data: 'task_toggle:join' },
     ]);
     rows.push([
-      { text: `${selected.react ? '' : ''} React to Message`,   callback_data: 'task_toggle:react' },
-      { text: `${selected.send  ? '' : ''} Send Message`,       callback_data: 'task_toggle:send' },
+      { text: `${selected.react ? '✅' : '⬜'} React to Message`,   callback_data: 'task_toggle:react' },
+      { text: `${selected.send  ? '✅' : '⬜'} Send Message`,       callback_data: 'task_toggle:send' },
     ]);
   }
 
   const anySelected = Object.values(selected).some(Boolean);
   if (anySelected) {
-    rows.push([{ text: ' Confirm Task Selection', callback_data: 'task_confirm' }]);
+    rows.push([{ text: '✅ Confirm Task Selection', callback_data: 'task_confirm' }]);
   }
 
   return { inline_keyboard: rows };
@@ -101,14 +101,14 @@ function submitRaidKeyboard(raidId, botUsername) {
   if (url) {
     return {
       inline_keyboard: [
-        [{ text: ' Submit Tasks', url }],
+        [{ text: '🚀 Submit Tasks', url }],
       ],
     };
   }
   // Fallback: inline callback (will DM user from handler)
   return {
     inline_keyboard: [
-      [{ text: ' Submit Tasks', callback_data: `raid:submit:${raidId}` }],
+      [{ text: '🚀 Submit Tasks', callback_data: `raid:submit:${raidId}` }],
     ],
   };
 }
@@ -118,8 +118,8 @@ function raidTaskKeyboard(tasks, doneIds = []) {
   const buttons = tasks.map((t, i) => {
     const done = doneIds.includes(t.id);
     const label = done
-      ? ` Task ${i + 1}: ${taskShortLabel(t)}`
-      : ` Task ${i + 1}: ${taskShortLabel(t)}`;
+      ? `✅ Task ${i + 1}: ${taskShortLabel(t)}`
+      : `▶️ Task ${i + 1}: ${taskShortLabel(t)}`;
     return [{ text: label, callback_data: done ? 'noop' : `task:verify:${t.id}` }];
   });
   return { inline_keyboard: buttons };
@@ -131,18 +131,18 @@ function taskActionKeyboard(task, taskIndex) {
 
   if (task.task_link) {
     const linkLabel =
-      task.type === 'follow'   ? ' Open Profile' :
-      task.type === 'like'     ? ' Open Tweet to Like' :
-      task.type === 'retweet'  ? ' Open Tweet to Retweet' :
-      task.type === 'comment'  ? ' Open Tweet to Comment' :
-      task.type === 'quote'    ? ' Open Tweet to Quote' :
-      ' Open Link';
+      task.type === 'follow'   ? '👤 Open Profile' :
+      task.type === 'like'     ? '❤️ Open Tweet to Like' :
+      task.type === 'retweet'  ? '🔁 Open Tweet to Retweet' :
+      task.type === 'comment'  ? '💬 Open Tweet to Comment' :
+      task.type === 'quote'    ? '🗣 Open Tweet to Quote' :
+      '🔗 Open Link';
     rows.push([{ text: linkLabel, url: task.task_link }]);
   }
 
   // Verify button only for verifiable-via-API task types
   if (['follow', 'like', 'retweet'].includes(task.type)) {
-    rows.push([{ text: ` Verify Task ${taskIndex + 1}`, callback_data: `task:confirm_verify:${task.id}` }]);
+    rows.push([{ text: `✅ Verify Task ${taskIndex + 1}`, callback_data: `task:confirm_verify:${task.id}` }]);
   }
 
   return { inline_keyboard: rows };
@@ -153,17 +153,17 @@ function telegramTaskActionKeyboard(task) {
   const rows = [];
   if (task.task_link) {
     const label =
-      task.type === 'join'  ? ' Open Channel / Group' :
-      task.type === 'react' ? ' Open Message' :
-      task.type === 'send'  ? ' Open Group' :
-      ' Open Link';
+      task.type === 'join'  ? '📥 Open Channel / Group' :
+      task.type === 'react' ? '💬 Open Message' :
+      task.type === 'send'  ? '💬 Open Group' :
+      '🔗 Open Link';
     rows.push([{ text: label, url: task.task_link }]);
   }
 
   if (task.type === 'join') {
-    rows.push([{ text: ' Verify I Joined', callback_data: `task:tg_verify:${task.id}` }]);
+    rows.push([{ text: '✅ Verify I Joined', callback_data: `task:tg_verify:${task.id}` }]);
   } else {
-    rows.push([{ text: ' Mark as Done', callback_data: `task:tg_done:${task.id}` }]);
+    rows.push([{ text: '✅ Mark as Done', callback_data: `task:tg_done:${task.id}` }]);
   }
 
   return { inline_keyboard: rows };
@@ -181,9 +181,9 @@ function groupSelectKeyboard(groups) {
 function settingsKeyboard() {
   return {
     inline_keyboard: [
-      [{ text: ' Set Min Comment Length',  callback_data: 'settings:min_chars' }],
-      [{ text: ' Set Leaderboard Topic ID', callback_data: 'settings:lb_topic' }],
-      [{ text: ' Close a Raid',            callback_data: 'settings:close_raid' }],
+      [{ text: '✏️ Set Min Comment Length',  callback_data: 'settings:min_chars' }],
+      [{ text: '📌 Set Leaderboard Topic ID', callback_data: 'settings:lb_topic' }],
+      [{ text: '🔒 Close a Raid',            callback_data: 'settings:close_raid' }],
     ],
   };
 }

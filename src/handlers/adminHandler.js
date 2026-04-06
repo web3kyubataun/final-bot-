@@ -520,7 +520,7 @@ async function finalizeRaidAndPublish(telegram, userId, data, chosenTaskTypes, f
   let botUsername = null;
   try {
     const botInfo = require('../botInfo');
-    botUsername = botInfo.getBotUsername();
+    botUsername = botInfo.getUsername();
   } catch (_) {}
 
   const msg = formatRaidMessage(raidDoc, tasks);

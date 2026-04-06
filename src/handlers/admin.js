@@ -1,803 +1,668 @@
-/**
- * admin.js — Admin panel (step-by-step wizard)
- *
- * Wizard: Platform → Actions → Title → Link → [MinChars] → Reward → [Duration] → Create
- */
-
-const store   = require('../store');
-const sheets  = require('../services/sheets');
+const store = require('../store');
+const sheets = require('../services/sheets');
 const session = require('../sessions');
-const config  = require('../config');
-const { isAdminUser, adminOnly } = require('../middleware/auth');
-const { getBotUsername } = require('../botInfo');
+const config = require('../config');
+const { adminOnly, isOwner } = require('../middleware/auth');
 const {
   approvalKeyboard, adminMainKeyboard, taskDeleteKeyboard,
-  topicsSetupKeyboard, groupSelectorKeyboard, cancelKeyboard,
-  platformSelectKeyboard, taskTypeKeyboard, twitterMultiActionKeyboard,
-  taskCardKeyboard, taskCardDMKeyboard,
+  topicsSetupKeyboard, groupSelectorKeyboard, cancelKeyboard, switchGroupKeyboard,
 } = require('../utils/keyboard');
 
 const delay = ms => new Promise(r => setTimeout(r, ms));
 
-const TASK_TYPE_LABELS = {
-  follow: 'Follow', like: 'Like', retweet: 'Retweet',
-  comment: 'Comment', quote: 'Quote Tweet',
-  join: 'Join Channel/Group', react: 'React to Message', send: 'Send Message',
-};
+// ═══════════════════════════════════════════════
+//  RESOLVE GROUP FOR ADMIN
+// ═══════════════════════════════════════════════
 
-const STANDALONE = ['like', 'follow'];
-
+/**
+ * Get the groupId an admin is currently working with.
+ * Priority: group chat context > stored DM context
+ */
 function resolveAdminGroup(ctx) {
-  const t = ctx.chat?.type;
-  if (t === 'group' || t === 'supergroup') return String(ctx.chat.id);
+  const chatType = ctx.chat?.type;
+  if (chatType === 'group' || chatType === 'supergroup') {
+    return String(ctx.chat.id);
+  }
   return store.getAdminContext(ctx.from?.id) || null;
 }
 
-function adminGuard(ctx) {
-  if (!isAdminUser(ctx.from?.id)) { ctx.answerCbQuery('Not authorized.').catch(() => {}); return false; }
-  return true;
-}
+// ═══════════════════════════════════════════════
+//  SEND ADMIN PANEL
+// ═══════════════════════════════════════════════
 
 async function sendAdminPanel(ctx, groupId, isEdit = false) {
   const userId = ctx.from.id;
-  if (!isAdminUser(userId)) return ctx.reply('You are not authorized.');
 
   if (!groupId) {
     const groups = store.getGroupsForAdmin(userId);
-    if (!groups.length) return ctx.replyWithHTML(
-      `<b>No registered groups found.</b>\n\nYou are not an admin of any whitelisted group.\nAn owner must run /addgroup first, then /addadmin &lt;yourId&gt; &lt;groupId&gt;.`
-    );
+    if (!groups.length) {
+      return ctx.replyWithHTML(
+        `⚠️ <b>No registered groups found.</b>\n\n` +
+        `You are not an admin of any whitelisted group.\n` +
+        `An owner must run /addgroup first, then add you as admin.`
+      );
+    }
     if (groups.length === 1) {
       groupId = groups[0].id;
       store.setAdminContext(userId, groupId);
     } else {
-      return ctx.replyWithHTML(`<b>Select a group to manage:</b>`, groupSelectorKeyboard(groups));
+      return ctx.replyWithHTML(
+        `📋 <b>Select a group to manage:</b>\n` +
+        `<i>You are admin of ${groups.length} groups.</i>`,
+        groupSelectorKeyboard(groups)
+      );
     }
   }
 
   const group = store.getGroup(groupId);
-  if (!group) return ctx.reply('Group not found. Owner must /addgroup first.');
+  if (!group) return ctx.reply('⚠️ Group not found. Owner must /addgroup first.');
+
+  // Save context for DM use
   store.setAdminContext(userId, groupId);
-  const stats     = store.getGroupStats(groupId);
-  const name      = group.groupName || groupId;
-  const adminGrps = store.getGroupsForAdmin(userId);
-  const canSwitch = adminGrps.length > 1;
+
+  const stats = store.getGroupStats(groupId);
+  const name  = group.groupName || groupId;
+  const adminGroups = store.getGroupsForAdmin(userId);
+  const canSwitch = adminGroups.length > 1;
+
   const text =
-    `<b>Admin Panel</b>\n${'─'.repeat(30)}\n<b>${name}</b>\n${'─'.repeat(30)}\n` +
-    `Tasks: <b>${stats.activeTasks}</b>  Raids: <b>${stats.activeRaids}</b>\n` +
-    `Users: <b>${stats.totalUsers}</b>  Mode: <b>${group.accessMode}</b>\n${'─'.repeat(30)}\n` +
-    (canSwitch ? `<i>Use Switch Group to manage a different group.</i>` : `<i>Tap a section below:</i>`);
+    `🛠 <b>Admin Panel</b>\n` +
+    `${'─'.repeat(30)}\n` +
+    `📋 <b>${name}</b>\n` +
+    `${'─'.repeat(30)}\n` +
+    `🎯 Tasks: <b>${stats.activeTasks}</b> active  ⚡ Raids: <b>${stats.activeRaids}</b> active\n` +
+    `⏳ Pending reviews: <b>${stats.pendingSubmissions}</b>\n` +
+    `👥 Users: <b>${stats.totalUsers}</b>  •  🔐 Mode: <b>${group.accessMode}</b>\n` +
+    `${'─'.repeat(30)}\n` +
+    (canSwitch ? `<i>Use 🔄 Switch Group to manage a different group.</i>` : `<i>Tap a section below:</i>`);
 
   if (isEdit && ctx.callbackQuery) {
-    try { return await ctx.editMessageText(text, { parse_mode: 'HTML', ...adminMainKeyboard(name, canSwitch) }); } catch {}
+    try {
+      return await ctx.editMessageText(text, {
+        parse_mode: 'HTML',
+        ...adminMainKeyboard(name, canSwitch),
+      });
+    } catch { /* message unchanged — ignore */ }
   }
   return ctx.replyWithHTML(text, adminMainKeyboard(name, canSwitch));
 }
 
-// ── Session input handler (runs before all other message handlers) ─────────
+// ═══════════════════════════════════════════════
+//  /admin COMMAND
+// ═══════════════════════════════════════════════
+
+async function handleAdminPanel(ctx) {
+  const groupId = resolveAdminGroup(ctx);
+  await sendAdminPanel(ctx, groupId);
+}
+
+// ═══════════════════════════════════════════════
+//  ADMIN SESSION INPUT (middleware runs before all)
+// ═══════════════════════════════════════════════
 
 async function handleAdminSessionInput(ctx, next) {
   const userId = ctx.from?.id;
+  // Only process text messages for admin flows
   if (!userId || !ctx.message?.text) return next();
+
   const s = session.getSession(userId);
   if (!s?.adminFlow) return next();
 
   const text    = ctx.message.text.trim();
-  const groupId = s.groupId || resolveAdminGroup(ctx);
+  const groupId = s.groupId || store.getAdminContext(userId);
 
-  // ── Cancel shortcut
-  if (text === '/cancel') {
+  // If text looks like a command, cancel the flow and let the command through
+  if (text.startsWith('/')) {
     session.clearSession(userId);
-    return ctx.replyWithHTML('Cancelled.');
+    return next();
   }
 
-  // ── changeusertwitter flow ─────────────────────────────────────────────────
-  if (s.step === 'changeusertwitter_userId') {
-    session.setSession(userId, { ...s, step: 'changeusertwitter_handle', targetUserId: text });
+  // ── TASK / RAID STEPS ─────────────────────────────────
+  if (s.step === 'task_title') {
+    session.setSession(userId, { ...s, step: 'task_link', title: text });
     return ctx.replyWithHTML(
-      `<b>Step 2/2</b> — Enter the new Twitter handle:\n<i>Format: @handle or handle (without @)</i>`
-    );
-  }
-  if (s.step === 'changeusertwitter_handle') {
-    const targetUserId = s.targetUserId;
-    const handle = text.replace(/^@/, '').toLowerCase().trim();
-    if (!handle || !/^[a-z0-9_]{1,50}$/i.test(handle)) {
-      return ctx.replyWithHTML(`<b>Invalid handle.</b> Use letters, numbers, underscores only. Try again:`);
-    }
-    const conflict = store.checkTwitterUsernameConflict(handle, targetUserId);
-    if (conflict) {
-      session.clearSession(userId);
-      return ctx.replyWithHTML(
-        `<b>Conflict</b>\n\n@${handle} is already linked to user <code>${conflict.id}</code> (@${conflict.username}).\n\nRemove it from that user first.`
-      );
-    }
-    const ok = store.adminSetTwitter(targetUserId, handle);
-    session.clearSession(userId);
-    if (!ok) return ctx.replyWithHTML(`<b>User not found:</b> <code>${targetUserId}</code>`);
-    return ctx.replyWithHTML(
-      `<b>Twitter Handle Updated</b>\n\nUser <code>${targetUserId}</code> → @${handle}\n<i>Handle is now locked.</i>`
+      `✅ Title: <b>${text}</b>\n\n` +
+      `<b>Step 2 / 4</b> — Send the <b>URL/link</b> for this task:\n<i>(type "none" if no link)</i>`,
+      cancelKeyboard()
     );
   }
 
-  // ── wladd flow
-  if (s.step === 'wladd_userId') {
-    const uid = text.replace('@', '');
-    const ok  = store.addToWhitelist(groupId, uid);
-    session.clearSession(userId);
-    return ctx.replyWithHTML(ok ? `<b>Whitelist</b>\n\n<code>${uid}</code> added.` : `Group not found.`);
+  if (s.step === 'task_link') {
+    session.setSession(userId, { ...s, step: 'task_reward', link: text === 'none' ? '' : text });
+    return ctx.replyWithHTML(
+      `✅ Link saved.\n\n<b>Step 3 / 4</b> — Send the <b>point reward</b> (e.g. 100):`,
+      cancelKeyboard()
+    );
   }
 
-  // ── wlremove flow
-  if (s.step === 'wlremove_userId') {
-    const uid = text.replace('@', '');
-    store.removeFromWhitelist(groupId, uid);
-    session.clearSession(userId);
-    return ctx.replyWithHTML(`<b>Whitelist</b>\n\n<code>${uid}</code> removed.`);
+  if (s.step === 'task_reward') {
+    const reward = parseInt(text);
+    if (isNaN(reward) || reward < 0) return ctx.reply('❌ Enter a valid number (e.g. 100)');
+    session.setSession(userId, { ...s, step: 'task_button', reward });
+    return ctx.replyWithHTML(
+      `✅ Reward: <b>${reward} pts</b>\n\n` +
+      `<b>Step 4 / 4</b> — Send a <b>button label</b> (e.g. "Like & Retweet"):\n<i>Type "none" to skip</i>`,
+      cancelKeyboard()
+    );
   }
 
-  // ── ban/unban flows
-  if (s.step === 'ban_userId') {
-    const uid = text.replace('@', '');
-    const ok  = store.banUser(uid);
+  if (s.step === 'task_button') {
     session.clearSession(userId);
-    return ctx.replyWithHTML(ok ? `<b>Banned</b>\n\n<code>${uid}</code>` : `User not found.`);
-  }
-  if (s.step === 'unban_userId') {
-    const uid = text.replace('@', '');
-    const ok  = store.unbanUser(uid);
-    session.clearSession(userId);
-    return ctx.replyWithHTML(ok ? `<b>Unbanned</b>\n\n<code>${uid}</code>` : `User not found.`);
-  }
+    const btnLabel = text === 'none' ? null : text;
+    const task = store.createTask(groupId, s.title, s.link, s.reward, s.type, btnLabel);
 
-  // ── Topic ID step
-  if (s.step === 'set_topic_id') {
-    const topicId = parseInt(text);
-    if (isNaN(topicId)) return ctx.replyWithHTML(`<b>Invalid thread ID.</b> Send a numeric ID:`);
-    store.setGroupTopic(s.groupId || groupId, s.topicType, topicId);
-    session.clearSession(userId);
-    return ctx.replyWithHTML(`<b>Topic Set</b>\n\n<b>${s.topicType}</b> → thread <code>${topicId}</code>`);
-  }
+    const { taskCardKeyboard } = require('../utils/keyboard');
+    const emoji = s.type === 'raid' ? '⚡' : '🎯';
+    const broadcastMsg =
+      `${emoji} <b>New ${s.type === 'raid' ? 'Raid' : 'Task'}!</b>\n` +
+      `${'─'.repeat(28)}\n` +
+      `📌 <b>${task.title}</b>\n` +
+      (task.link ? `🔗 ${task.link}\n` : '') +
+      `💰 Reward: <b>${task.reward} pts</b>\n\n` +
+      `<i>Tap Submit to complete & earn points.</i>`;
 
-  // ── add_email step
-  if (s.step === 'add_email') {
-    const email = text.trim();
-    const gid   = s.groupId || groupId;
-    const g     = store.getGroup(gid);
-    if (g?.sheetId && g.sheetId !== 'none') {
-      await sheets.shareSheet(g.sheetId, email);
-    }
-    session.clearSession(userId);
-    return ctx.replyWithHTML(`<b>Email Added</b>\n\n<code>${email}</code> has been granted editor access to the sheet.`);
-  }
+    // Post in group (correct topic)
+    const group = store.getGroup(groupId);
+    const topicKey = s.type === 'raid' ? 'raids' : 'quests';
+    const topicId  = group?.topics?.[topicKey] || group?.topics?.notifications || null;
 
-  // ── set_link step
-  if (s.step === 'set_link') {
-    store.setGroupMeta(s.groupId || groupId, { groupLink: text });
-    session.clearSession(userId);
-    return ctx.replyWithHTML(`<b>Group Link Set</b>\n\n<code>${text}</code>`);
-  }
-
-  // ── announce step
-  if (s.step === 'announce_text') {
-    const gid      = s.groupId || groupId;
-    const g        = store.getGroup(gid);
-    const topicId  = g?.topics?.announcements || null;
     try {
-      await ctx.telegram.sendMessage(gid, text, { message_thread_id: topicId || undefined });
-      session.clearSession(userId);
-      return ctx.replyWithHTML(`<b>Announcement sent.</b>`);
-    } catch (e) {
-      session.clearSession(userId);
-      return ctx.replyWithHTML(`<b>Failed:</b> ${e.message}`);
-    }
-  }
+      await ctx.telegram.sendMessage(groupId, broadcastMsg, {
+        parse_mode: 'HTML',
+        message_thread_id: topicId || undefined,
+        ...taskCardKeyboard(task.id, task.link, btnLabel),
+      });
+    } catch (e) { console.error('Group post error:', e.message); }
 
-  // ── dm_all step
-  if (s.step === 'dm_all_text') {
-    const users = store.getAllUsers();
-    session.clearSession(userId);
-    await ctx.replyWithHTML(`<b>DM All</b> — Sending to ${users.length} users…`);
-    let sent = 0, failed = 0;
+    // Separate notification topic post
+    if (topicId && group?.topics?.notifications && topicId !== group.topics.notifications) {
+      try {
+        await ctx.telegram.sendMessage(groupId, broadcastMsg, {
+          parse_mode: 'HTML',
+          message_thread_id: group.topics.notifications,
+          ...taskCardKeyboard(task.id, task.link, btnLabel),
+        });
+      } catch { }
+    }
+
+    // DM all users
+    const users = store.getAllUsers().filter(u => !u.banned && u.notifications !== false);
+    let dmSent = 0;
     for (const u of users) {
-      try { await ctx.telegram.sendMessage(u.id, text); sent++; } catch { failed++; }
+      try {
+        await ctx.telegram.sendMessage(u.id, broadcastMsg, {
+          parse_mode: 'HTML',
+          ...taskCardKeyboard(task.id, task.link, btnLabel),
+        });
+        dmSent++;
+      } catch { }
       await delay(50);
     }
-    return ctx.replyWithHTML(`<b>Done</b> — Delivered: ${sent}  Failed: ${failed}`);
-  }
 
-  // ── Task wizard flow ──────────────────────────────────────────────────────
-
-  const isTask = ['task', 'raid'].includes(s.taskKind);
-  if (!isTask) return next();
-
-  // Step: title
-  if (s.step === 'await_title') {
-    const isComment = s.taskTypes ? s.taskTypes.includes('comment') : s.taskType === 'comment';
-    const isQuote   = s.taskTypes ? s.taskTypes.includes('quote')   : s.taskType === 'quote';
-    const stepNum   = s.taskKind === 'raid' ? '4 of 7' : '4 of 6';
-    session.setSession(userId, { ...s, step: 'await_link', title: text });
-    return ctx.replyWithHTML(
-      `Title saved.\n\n<b>Step ${stepNum}</b> — Paste the <b>Twitter/X link</b> (tweet or profile URL):\n<i>Or send "none" to skip.</i>`,
-      cancelKeyboard()
+    await ctx.replyWithHTML(
+      `✅ <b>${s.type === 'raid' ? 'Raid' : 'Task'} created!</b>\n` +
+      `🆔 ID: <code>${task.id}</code>  •  DMs: <b>${dmSent}</b>`
     );
+    return sendAdminPanel(ctx, groupId);
   }
 
-  // Step: link
-  if (s.step === 'await_link') {
-    const link          = text.toLowerCase() === 'none' ? '' : text;
-    const hasComment    = s.taskTypes ? s.taskTypes.includes('comment') : s.taskType === 'comment';
-    const hasQuote      = s.taskTypes ? s.taskTypes.includes('quote')   : s.taskType === 'quote';
-    const needsMinChars = hasComment || hasQuote;
-    const stepLabel     = needsMinChars
-      ? (s.taskKind === 'raid' ? '5 of 7' : '5 of 6')
-      : (s.taskKind === 'raid' ? '5 of 7' : '5 of 6');
-
-    if (needsMinChars) {
-      session.setSession(userId, { ...s, step: 'await_min_chars', link });
-      return ctx.replyWithHTML(
-        `Link saved.\n\n<b>Step ${stepLabel}</b> — Set <b>minimum comment characters</b>:\n<i>Send 0 for no minimum.</i>`,
-        cancelKeyboard()
-      );
+  // ── ANNOUNCE ─────────────────────────────────────────
+  if (s.step === 'announce_msg') {
+    session.clearSession(userId);
+    const group = store.getGroup(groupId);
+    const topicId = group?.topics?.announcements || null;
+    const msg = `📢 <b>Announcement</b>\n\n${text}`;
+    try {
+      await ctx.telegram.sendMessage(groupId, msg, {
+        parse_mode: 'HTML',
+        message_thread_id: topicId || undefined,
+      });
+    } catch (e) { console.error('Announce error:', e.message); }
+    const users = store.getAllUsers().filter(u => !u.banned && u.notifications !== false);
+    let sent = 0;
+    for (const u of users) {
+      try { await ctx.telegram.sendMessage(u.id, msg, { parse_mode: 'HTML' }); sent++; } catch { }
+      await delay(50);
     }
+    await ctx.replyWithHTML(`✅ Announced to <b>${sent}</b> users.`);
+    return sendAdminPanel(ctx, groupId);
+  }
 
-    session.setSession(userId, { ...s, step: 'await_reward', link });
-    return ctx.replyWithHTML(
-      `Link saved.\n\n<b>Step ${stepLabel}</b> — Set the <b>reward points</b>:`,
-      cancelKeyboard()
+  // ── DM ALL ─────────────────────────────────────────────
+  if (s.step === 'dm_all_msg') {
+    session.clearSession(userId);
+    const msg = `📨 <b>Message from Admin</b>\n\n${text}`;
+    const users = store.getAllUsers().filter(u => !u.banned && u.notifications !== false);
+    let sent = 0;
+    for (const u of users) {
+      try { await ctx.telegram.sendMessage(u.id, msg, { parse_mode: 'HTML' }); sent++; } catch { }
+      await delay(50);
+    }
+    await ctx.replyWithHTML(`✅ DM sent to <b>${sent}</b> users.`);
+    return sendAdminPanel(ctx, groupId);
+  }
+
+  // ── BAN ───────────────────────────────────────────────
+  if (s.step === 'ban_id') {
+    session.clearSession(userId);
+    const tid = text.replace('@', '');
+    const ok  = store.banUser(tid);
+    await ctx.replyWithHTML(ok
+      ? `🚫 User <code>${tid}</code> banned.`
+      : `⚠️ User <code>${tid}</code> not found. They haven't used the bot yet.`
     );
+    return sendAdminPanel(ctx, groupId);
   }
 
-  // Step: minChars
-  if (s.step === 'await_min_chars') {
-    const minChars = parseInt(text) || 0;
-    const stepNum  = s.taskKind === 'raid' ? '6 of 7' : '6 of 6';
-    session.setSession(userId, { ...s, step: 'await_reward', minChars });
-    return ctx.replyWithHTML(`<b>Step ${stepNum}</b> — Set the <b>reward points</b>:`, cancelKeyboard());
+  // ── UNBAN ─────────────────────────────────────────────
+  if (s.step === 'unban_id') {
+    session.clearSession(userId);
+    const tid = text.replace('@', '');
+    const ok  = store.unbanUser(tid);
+    await ctx.replyWithHTML(ok
+      ? `✅ User <code>${tid}</code> unbanned.`
+      : `⚠️ User <code>${tid}</code> not found.`
+    );
+    return sendAdminPanel(ctx, groupId);
   }
 
-  // Step: reward
-  if (s.step === 'await_reward') {
-    const reward = parseInt(text);
-    if (isNaN(reward) || reward < 1) return ctx.replyWithHTML(`<b>Invalid.</b> Enter a positive number:`);
-    if (s.taskKind === 'raid') {
-      session.setSession(userId, { ...s, step: 'await_duration', reward });
-      return ctx.replyWithHTML(
-        `<b>Step 7 of 7</b> — Set <b>raid duration in minutes</b> (1–1440):\n<i>Example: 60 for 1 hour, 1440 for 24 hours.</i>`,
-        cancelKeyboard()
-      );
+  // ── ADD ADMIN ─────────────────────────────────────────
+  if (s.step === 'add_admin_id') {
+    session.clearSession(userId);
+    const tid = text.replace('@', '');
+    store.addAdmin(groupId, tid);
+    await ctx.replyWithHTML(`✅ <code>${tid}</code> added as admin.`);
+    return sendAdminPanel(ctx, groupId);
+  }
+
+  // ── REMOVE ADMIN ──────────────────────────────────────
+  if (s.step === 'rem_admin_id') {
+    session.clearSession(userId);
+    const tid = text.replace('@', '');
+    store.removeAdmin(groupId, tid);
+    await ctx.replyWithHTML(`✅ <code>${tid}</code> removed from admins.`);
+    return sendAdminPanel(ctx, groupId);
+  }
+
+  // ── ADD EMAIL ─────────────────────────────────────────
+  if (s.step === 'add_email') {
+    session.clearSession(userId);
+    if (!text.includes('@') || !text.includes('.')) return ctx.reply('❌ Invalid email format.');
+    const group = store.getGroup(groupId);
+    if (!group.extraEmails) group.extraEmails = [];
+    if (!group.extraEmails.includes(text)) group.extraEmails.push(text);
+    if (group.sheetId && group.sheetId !== 'none') {
+      try { await sheets.shareSheet(group.sheetId, text); } catch (e) { console.error(e.message); }
     }
-    // Create task immediately
-    await createTaskFromSession(ctx, { ...s, reward });
-    return;
+    await ctx.replyWithHTML(`✅ Email <b>${text}</b> added${group.sheetId !== 'none' ? ' & sheet shared' : ''}.`);
+    return sendAdminPanel(ctx, groupId);
   }
 
-  // Step: duration (raid only)
-  if (s.step === 'await_duration') {
-    const dur = parseInt(text);
-    if (isNaN(dur) || dur < 1 || dur > 1440) {
-      return ctx.replyWithHTML(`<b>Invalid.</b> Enter minutes between 1 and 1440:`);
-    }
-    await createTaskFromSession(ctx, { ...s, durationMinutes: dur });
-    return;
+  // ── SET GROUP LINK ────────────────────────────────────
+  if (s.step === 'set_link') {
+    session.clearSession(userId);
+    store.setGroupMeta(groupId, { groupLink: text });
+    await ctx.replyWithHTML(`✅ Group link set: ${text}`);
+    return sendAdminPanel(ctx, groupId);
+  }
+
+  // ── SET TOPIC ID ──────────────────────────────────────
+  if (s.step === 'set_topic_id') {
+    session.clearSession(userId);
+    const tid = parseInt(text);
+    if (isNaN(tid)) return ctx.reply('❌ Please send a valid topic ID number.');
+    store.setGroupTopic(groupId, s.topicType, tid);
+    await ctx.replyWithHTML(`✅ Topic <b>${s.topicType}</b> → <code>${tid}</code>`);
+    return sendAdminPanel(ctx, groupId);
   }
 
   return next();
 }
 
-async function createTaskFromSession(ctx, s) {
-  const userId  = ctx.from.id;
-  const groupId = s.groupId;
+// ═══════════════════════════════════════════════
+//  APPROVAL / REJECTION  (works from DM — no groupId needed)
+// ═══════════════════════════════════════════════
 
-  const taskTypes   = s.taskTypes || null;
-  const primaryType = taskTypes?.[0] || s.taskType || 'like';
-  const platform    = s.platform || 'twitter';
-  const buttonLabel = taskTypes?.length > 1
-    ? taskTypes.map(t => TASK_TYPE_LABELS[t] || t).join(' + ')
-    : (TASK_TYPE_LABELS[primaryType] || primaryType);
+async function handleApprove(ctx) {
+  const subId = parseInt(ctx.match[1]);
+  const sub   = store.getSubmission(subId);
+  if (!sub) return ctx.answerCbQuery('Submission not found.', { show_alert: true });
+  if (sub.status !== 'pending') return ctx.answerCbQuery(`Already ${sub.status}.`, { show_alert: true });
 
-  const task = store.createTask(
-    groupId,
-    s.title,
-    s.link || '',
-    s.reward,
-    s.taskKind,
-    buttonLabel,
-    platform,
-    primaryType,
-    taskTypes,
-    s.minChars || 0,
-    s.durationMinutes || null
-  );
+  store.approveSubmission(subId);
+  store.addPoints(sub.userId, sub.points);
 
-  session.clearSession(userId);
+  const user  = store.getUser(sub.userId);
+  const group = store.getGroup(sub.groupId);
 
-  const typeLabel = taskTypes?.length > 1
-    ? taskTypes.map(t => TASK_TYPE_LABELS[t] || t).join(' + ')
-    : (TASK_TYPE_LABELS[primaryType] || primaryType);
+  // Update Google Sheet (skip for photo proofs)
+  if (group?.sheetId && group.sheetId !== 'none' && sub.proofType !== 'photo') {
+    try {
+      await sheets.updateSubmissionStatus(group.sheetId, sub.userId, sub.taskTitle, 'approved');
+      if (user) await sheets.upsertUser(group.sheetId, {
+        userId: sub.userId, username: sub.username,
+        points: user.points, twitter: user.twitter,
+        wallet: user.wallet, joinedAt: user.joinedAt,
+      });
+    } catch (e) { console.error('Sheet update error:', e.message); }
+  }
 
-  const botName = getBotUsername() || 'bot';
-  const g = store.getGroup(groupId);
+  // Notify user
+  try {
+    await ctx.telegram.sendMessage(sub.userId,
+      `🎉 <b>Submission Approved!</b>\n` +
+      `${'─'.repeat(28)}\n` +
+      `🎯 Task: <b>${sub.taskTitle}</b>\n` +
+      `💰 Points earned: <b>+${sub.points}</b>\n` +
+      `🏦 Total: <b>${user?.points ?? '?'}</b>\n\n` +
+      `Keep completing tasks! 🚀`,
+      { parse_mode: 'HTML' }
+    );
+  } catch { }
 
-  const summary =
-    `<b>${s.taskKind === 'raid' ? '⚡ Raid Created' : '📋 Task Created'}</b>\n${'─'.repeat(26)}\n` +
-    `<b>Title:</b> ${s.title}\n` +
-    `<b>Type:</b> ${typeLabel}\n` +
-    `<b>Reward:</b> ${s.reward} pts\n` +
-    (s.link ? `<b>Link:</b> ${s.link}\n` : '') +
-    (s.minChars > 0 ? `<b>Min chars:</b> ${s.minChars}\n` : '') +
-    (task.expiresAt ? `<b>Expires:</b> ${new Date(task.expiresAt).toUTCString()}\n` : '') +
-    `<b>Task ID:</b> ${task.id}`;
+  // Post to submissions topic
+  const topicId = group?.topics?.submissions;
+  if (topicId) {
+    try {
+      await ctx.telegram.sendMessage(sub.groupId,
+        `✅ Approved — @${sub.username} | ${sub.taskTitle} | +${sub.points}pts`,
+        { parse_mode: 'HTML', message_thread_id: topicId }
+      );
+    } catch { }
+  }
 
-  await ctx.replyWithHTML(summary);
+  await ctx.editMessageCaption?.(`✅ Approved — @${sub.username} | ${sub.taskTitle} | +${sub.points}pts`).catch(() => {});
+  await ctx.editMessageText?.(
+    `✅ <b>Approved</b> — @${sub.username} | ${sub.taskTitle} | +${sub.points}pts`,
+    { parse_mode: 'HTML' }
+  ).catch(() => {});
+  await ctx.answerCbQuery('✅ Approved!');
+}
 
-  // Post to group
-  const topicId = g?.topics?.[s.taskKind === 'raid' ? 'raids' : 'quests'] || null;
-  const groupMsg =
-    `<b>${s.taskKind === 'raid' ? '⚡ New Raid' : '📋 New Task'}: ${s.title}</b>\n` +
-    `Type: ${typeLabel} | Reward: ${s.reward} pts\n` +
-    (task.expiresAt ? `Ends: ${new Date(task.expiresAt).toUTCString()}` : '');
+async function handleReject(ctx) {
+  const subId = parseInt(ctx.match[1]);
+  const sub   = store.getSubmission(subId);
+  if (!sub) return ctx.answerCbQuery('Submission not found.', { show_alert: true });
+  if (sub.status !== 'pending') return ctx.answerCbQuery(`Already ${sub.status}.`, { show_alert: true });
+
+  store.rejectSubmission(subId);
+
+  const group = store.getGroup(sub.groupId);
+  if (group?.sheetId && group.sheetId !== 'none' && sub.proofType !== 'photo') {
+    try { await sheets.updateSubmissionStatus(group.sheetId, sub.userId, sub.taskTitle, 'rejected'); } catch { }
+  }
 
   try {
-    await ctx.telegram.sendMessage(groupId, groupMsg, {
-      parse_mode: 'HTML',
-      message_thread_id: topicId || undefined,
-      ...taskCardDMKeyboard(task.id, s.link, buttonLabel, botName),
-    });
-  } catch (e) {
-    console.error('[Admin] Failed to post task to group:', e.message);
+    await ctx.telegram.sendMessage(sub.userId,
+      `❌ <b>Submission Rejected</b>\n` +
+      `${'─'.repeat(28)}\n` +
+      `🎯 Task: ${sub.taskTitle}\n\n` +
+      `Please review the requirements and resubmit.`,
+      { parse_mode: 'HTML' }
+    );
+  } catch { }
+
+  await ctx.editMessageCaption?.(`❌ Rejected — @${sub.username} | ${sub.taskTitle}`).catch(() => {});
+  await ctx.editMessageText?.(
+    `❌ <b>Rejected</b> — @${sub.username} | ${sub.taskTitle}`,
+    { parse_mode: 'HTML' }
+  ).catch(() => {});
+  await ctx.answerCbQuery('❌ Rejected.');
+}
+
+// ═══════════════════════════════════════════════
+//  INLINE HELPERS
+// ═══════════════════════════════════════════════
+
+function startFlow(ctx, flowData, prompt) {
+  const groupId = resolveAdminGroup(ctx);
+  session.setSession(ctx.from.id, { adminFlow: true, groupId, ...flowData });
+  return ctx.replyWithHTML(prompt, cancelKeyboard());
+}
+
+async function showSubmissions(ctx, status) {
+  await ctx.answerCbQuery();
+  const groupId = resolveAdminGroup(ctx);
+  if (!groupId) return ctx.reply('⚠️ No group selected. Open /admin first.');
+
+  const subs = store.getSubmissionsForGroup(groupId, status);
+  const label = status.charAt(0).toUpperCase() + status.slice(1);
+
+  if (!subs.length) {
+    return ctx.replyWithHTML(`📬 <b>${label} Submissions</b>\n\n<i>None found.</i>`);
+  }
+
+  await ctx.replyWithHTML(
+    `📬 <b>${label} Submissions</b> (${subs.length})\n` +
+    `<i>Latest ${Math.min(subs.length, 10)} shown:</i>`
+  );
+
+  for (const sub of subs.slice(-10).reverse()) {
+    const isPhoto = sub.proofType === 'photo';
+    const caption =
+      `<b>#${sub.id}</b> — @${sub.username} (<code>${sub.userId}</code>)\n` +
+      `🎯 ${sub.taskTitle}\n` +
+      (isPhoto ? `📸 Photo proof\n` : `🔗 ${sub.proof}\n`) +
+      `💰 ${sub.points}pts  •  ${sub.createdAt.split('T')[0]}`;
+
+    if (isPhoto && sub.proofFileId && status === 'pending') {
+      try {
+        await ctx.telegram.sendPhoto(ctx.chat.id, sub.proofFileId, {
+          caption,
+          parse_mode: 'HTML',
+          ...approvalKeyboard(sub.id),
+        });
+      } catch {
+        await ctx.replyWithHTML(caption, status === 'pending' ? approvalKeyboard(sub.id) : {});
+      }
+    } else {
+      await ctx.replyWithHTML(caption, status === 'pending' ? approvalKeyboard(sub.id) : {});
+    }
   }
 }
 
-function startFlow(ctx, extra, promptText) {
-  const groupId = resolveAdminGroup(ctx);
-  const userId  = ctx.from.id;
-  session.setSession(userId, { adminFlow: true, groupId, ...extra });
-  return ctx.replyWithHTML(promptText, cancelKeyboard());
-}
-
-// ── register ──────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════
+//  REGISTER
+// ═══════════════════════════════════════════════
 
 function register(bot) {
-
   bot.use(handleAdminSessionInput);
 
-  // Commands
-  bot.command('admin', adminOnly, (ctx) => sendAdminPanel(ctx, resolveAdminGroup(ctx)));
+  bot.command('admin', adminOnly, handleAdminPanel);
 
-  bot.command('commands', adminOnly, async (ctx) => {
-    await ctx.replyWithHTML(
-      `<b>Admin Commands</b>\n${'─'.repeat(28)}\n\n` +
-      `/admin — Open admin panel\n` +
-      `/commands — Show this list\n` +
-      `/changeusertwitter &lt;userId&gt; @handle — Override Twitter handle\n` +
-      `  <i>Example: /changeusertwitter 123456789 @newhandle</i>\n` +
-      `/wladd &lt;userId&gt; — Add to whitelist\n` +
-      `/wlremove &lt;userId&gt; — Remove from whitelist`
-    );
+  bot.action(/^approve_(\d+)$/, handleApprove);
+  bot.action(/^reject_(\d+)$/, handleReject);
+
+  bot.action(/^del_task_(\d+)$/, async (ctx) => {
+    const ok = store.deactivateTask(parseInt(ctx.match[1]));
+    await ctx.answerCbQuery(ok ? '🗑 Deleted' : '⚠️ Not found', { show_alert: !ok });
+    if (ok) await ctx.editMessageText(`🗑 Task <b>#${ctx.match[1]}</b> deleted.`, { parse_mode: 'HTML' }).catch(() => {});
   });
 
-  bot.command('changeusertwitter', adminOnly, async (ctx) => {
-    const args = ctx.message.text.split(/\s+/).slice(1);
-    if (args.length >= 2) {
-      const targetUserId = args[0];
-      const handle       = args[1].replace(/^@/, '').toLowerCase();
-      if (!handle || !/^[a-z0-9_]{1,50}$/i.test(handle)) {
-        return ctx.replyWithHTML(`<b>Invalid handle.</b>\n\nUsage: /changeusertwitter &lt;userId&gt; @handle\n<i>Example: /changeusertwitter 123456789 @newhandle</i>`);
-      }
-      const conflict = store.checkTwitterUsernameConflict(handle, targetUserId);
-      if (conflict) {
-        return ctx.replyWithHTML(
-          `<b>Conflict</b>\n\n@${handle} is already linked to user <code>${conflict.id}</code> (@${conflict.username}).\n\nRemove it from that account first.`
-        );
-      }
-      const ok = store.adminSetTwitter(targetUserId, handle);
-      if (!ok) return ctx.replyWithHTML(`<b>User not found:</b> <code>${targetUserId}</code>`);
-      return ctx.replyWithHTML(`<b>Twitter Handle Updated</b>\n\nUser <code>${targetUserId}</code> → @${handle}\n<i>Handle is now locked.</i>`);
-    }
-    // Start wizard
-    session.setSession(ctx.from.id, { adminFlow: true, step: 'changeusertwitter_userId' });
-    await ctx.replyWithHTML(
-      `<b>Change User Twitter Handle</b>\n${'─'.repeat(28)}\n\n` +
-      `<b>Usage:</b> /changeusertwitter &lt;userId&gt; @handle\n` +
-      `<i>Example: /changeusertwitter 123456789 @newhandle</i>\n\n` +
-      `<b>Step 1/2</b> — Send the user's <b>Telegram ID</b>:`,
-      cancelKeyboard()
-    );
-  });
-
-  bot.command('wladd', adminOnly, async (ctx) => {
-    const args = ctx.message.text.split(/\s+/).slice(1);
-    const groupId = resolveAdminGroup(ctx);
-    if (args[0]) {
-      const uid = args[0].replace('@', '');
-      store.addToWhitelist(groupId, uid);
-      return ctx.replyWithHTML(`<b>Whitelist</b>\n\n<code>${uid}</code> added.`);
-    }
-    startFlow(ctx, { step: 'wladd_userId' }, `<b>WL Add</b>\n\nSend the user's Telegram ID or @username:`);
-  });
-
-  bot.command('wlremove', adminOnly, async (ctx) => {
-    const args = ctx.message.text.split(/\s+/).slice(1);
-    const groupId = resolveAdminGroup(ctx);
-    if (args[0]) {
-      const uid = args[0].replace('@', '');
-      store.removeFromWhitelist(groupId, uid);
-      return ctx.replyWithHTML(`<b>Whitelist</b>\n\n<code>${uid}</code> removed.`);
-    }
-    startFlow(ctx, { step: 'wlremove_userId' }, `<b>WL Remove</b>\n\nSend the user's Telegram ID or @username:`);
-  });
-
-  // ── Callback: Group selector ──────────────────────────────────────────────
-
-  bot.action(/^admin_select_group_(.+)$/, async (ctx) => {
-    if (!adminGuard(ctx)) return;
+  // Group selector (DM with multiple groups)
+  bot.action(/^select_group_(.+)$/, async (ctx) => {
     await ctx.answerCbQuery();
     const groupId = ctx.match[1];
     store.setAdminContext(ctx.from.id, groupId);
-    await sendAdminPanel(ctx, groupId, true);
+    await sendAdminPanel(ctx, groupId);
   });
 
+  // Switch group button
   bot.action('admin_switch_group', async (ctx) => {
-    if (!adminGuard(ctx)) return;
     await ctx.answerCbQuery();
     const groups = store.getGroupsForAdmin(ctx.from.id);
-    await ctx.replyWithHTML(`<b>Select a group:</b>`, groupSelectorKeyboard(groups));
+    await ctx.replyWithHTML(
+      `🔄 <b>Switch Group</b>\n\n<i>Select a group to manage:</i>`,
+      groupSelectorKeyboard(groups)
+    );
   });
 
-  // ── Task/Raid creation wizard ─────────────────────────────────────────────
-
-  bot.action('admin_create_task', async (ctx) => {
-    if (!adminGuard(ctx)) return;
+  bot.action('back_admin', async (ctx) => {
     await ctx.answerCbQuery();
-    const groupId = resolveAdminGroup(ctx);
-    if (!groupId) return ctx.reply('No group selected.');
-    session.setSession(ctx.from.id, { adminFlow: true, taskKind: 'task', groupId, step: 'await_platform' });
-    await ctx.replyWithHTML(`<b>New Task — Step 1 of 6</b>\n\nSelect the <b>platform</b>:`, platformSelectKeyboard('task'));
+    await sendAdminPanel(ctx, resolveAdminGroup(ctx), true);
+  });
+
+  bot.action('cancel_flow', async (ctx) => {
+    await ctx.answerCbQuery('Cancelled.');
+    session.clearSession(ctx.from.id);
+    await ctx.deleteMessage().catch(() => {});
+  });
+
+  // Section header noops
+  ['admin_section_campaigns','admin_section_subs','admin_section_bc',
+   'admin_section_users','admin_section_access','admin_section_setup'
+  ].forEach(a => bot.action(a, ctx => ctx.answerCbQuery()));
+
+  // ── Campaigns ──────────────────────────────────────────
+  bot.action('admin_create_task', async (ctx) => {
+    await ctx.answerCbQuery();
+    startFlow(ctx, { step: 'task_title', type: 'task' },
+      `📝 <b>Create Task</b>\n\n<b>Step 1 / 4</b> — Enter the task <b>title</b>:`);
   });
 
   bot.action('admin_create_raid', async (ctx) => {
-    if (!adminGuard(ctx)) return;
     await ctx.answerCbQuery();
-    const groupId = resolveAdminGroup(ctx);
-    if (!groupId) return ctx.reply('No group selected.');
-    session.setSession(ctx.from.id, { adminFlow: true, taskKind: 'raid', groupId, step: 'await_platform' });
-    await ctx.replyWithHTML(`<b>New Raid — Step 1 of 7</b>\n\nSelect the <b>platform</b>:`, platformSelectKeyboard('raid'));
+    startFlow(ctx, { step: 'task_title', type: 'raid' },
+      `⚡ <b>Create Raid</b>\n\n<b>Step 1 / 4</b> — Enter the raid <b>title</b>:`);
   });
-
-  // Platform selected → show action selector
-  bot.action(/^admin_platform_(task|raid)_(twitter|telegram)$/, async (ctx) => {
-    if (!adminGuard(ctx)) return;
-    await ctx.answerCbQuery();
-    const kind     = ctx.match[1];
-    const platform = ctx.match[2];
-    const s        = session.getSession(ctx.from.id) || {};
-    session.setSession(ctx.from.id, { ...s, platform, step: 'await_actions' });
-
-    if (platform === 'twitter') {
-      await ctx.replyWithHTML(
-        `<b>Step 2 of ${kind === 'raid' ? '7' : '6'}</b> — Select <b>action type</b>:\n\n` +
-        `<i>⚠️ Like and Follow must be standalone tasks (cannot be combined).</i>`,
-        twitterMultiActionKeyboard({})
-      );
-    } else {
-      // Telegram: single action only
-      await ctx.replyWithHTML(
-        `<b>Step 2 of ${kind === 'raid' ? '7' : '6'}</b> — Select <b>Telegram action</b>:`,
-        taskTypeKeyboard(kind, false)
-      );
-    }
-  });
-
-  // Twitter multi-action toggle
-  bot.action(/^admin_ttoggle_(follow|like|retweet|comment|quote)$/, async (ctx) => {
-    if (!adminGuard(ctx)) return;
-    await ctx.answerCbQuery();
-    const key = ctx.match[1];
-    const s   = session.getSession(ctx.from.id) || {};
-    const sel = s.selectedActions || {};
-
-    // Standalone check
-    if (STANDALONE.includes(key) && Object.keys(sel).some(k => k !== key)) {
-      return ctx.answerCbQuery('Like and Follow must be standalone. Remove other actions first.', { show_alert: true });
-    }
-    if (!STANDALONE.includes(key) && Object.keys(sel).some(k => STANDALONE.includes(k))) {
-      return ctx.answerCbQuery('Like and Follow must be standalone. Deselect them first.', { show_alert: true });
-    }
-
-    if (sel[key]) {
-      delete sel[key];
-    } else {
-      sel[key] = true;
-    }
-
-    session.setSession(ctx.from.id, { ...s, selectedActions: sel });
-    try {
-      await ctx.editMessageReplyMarkup(twitterMultiActionKeyboard(sel).reply_markup);
-    } catch {}
-  });
-
-  // Twitter multi-action confirm
-  bot.action('admin_tconfirm', async (ctx) => {
-    if (!adminGuard(ctx)) return;
-    await ctx.answerCbQuery();
-    const s   = session.getSession(ctx.from.id) || {};
-    const sel = s.selectedActions || {};
-    const chosen = Object.keys(sel);
-
-    if (!chosen.length) return ctx.answerCbQuery('Select at least one action.', { show_alert: true });
-
-    // Standalone validation at confirm time
-    if (chosen.length > 1 && chosen.some(k => STANDALONE.includes(k))) {
-      return ctx.answerCbQuery(
-        'Like and Follow tasks must be standalone. They cannot be combined with other actions.',
-        { show_alert: true }
-      );
-    }
-
-    session.setSession(ctx.from.id, {
-      ...s,
-      taskTypes: chosen,
-      taskType:  chosen[0],
-      step:      'await_title',
-    });
-    const stepNum = s.taskKind === 'raid' ? '3 of 7' : '3 of 6';
-    await ctx.replyWithHTML(
-      `Actions: <b>${chosen.map(k => TASK_TYPE_LABELS[k] || k).join(' + ')}</b>\n\n<b>Step ${stepNum}</b> — Enter the task <b>title</b>:`,
-      cancelKeyboard()
-    );
-  });
-
-  // Telegram task type directly selected
-  bot.action(/^admin_tasktype_(task|raid)_(join|react|send|like|follow|retweet|comment|quote)$/, async (ctx) => {
-    if (!adminGuard(ctx)) return;
-    await ctx.answerCbQuery();
-    const kind     = ctx.match[1];
-    const taskType = ctx.match[2];
-    const s        = session.getSession(ctx.from.id) || {};
-    session.setSession(ctx.from.id, { ...s, taskType, taskTypes: null, step: 'await_title' });
-    const stepNum = kind === 'raid' ? '3 of 7' : '3 of 6';
-    await ctx.replyWithHTML(
-      `Action: <b>${TASK_TYPE_LABELS[taskType] || taskType}</b>\n\n<b>Step ${stepNum}</b> — Enter the task <b>title</b>:`,
-      cancelKeyboard()
-    );
-  });
-
-  // ── View / delete tasks ───────────────────────────────────────────────────
 
   bot.action('admin_view_tasks', async (ctx) => {
-    if (!adminGuard(ctx)) return;
     await ctx.answerCbQuery();
     const groupId = resolveAdminGroup(ctx);
-    if (!groupId) return ctx.reply('No group selected.');
-    const tasks = store.getTasksForGroup(groupId, 'task');
-    const raids = store.getTasksForGroup(groupId, 'raid');
-    if (!tasks.length && !raids.length) return ctx.replyWithHTML(`<b>No active tasks or raids.</b>`);
-    const formatList = (items, label) => items.length
-      ? `<b>${label}</b>\n` + items.map(t => `• [${t.id}] ${t.title} — ${t.reward}pts`).join('\n')
-      : '';
-    const lines = [formatList(tasks, 'Tasks'), formatList(raids, 'Raids')].filter(Boolean).join('\n\n');
-    await ctx.replyWithHTML(lines);
+    if (!groupId) return ctx.reply('⚠️ No group selected. Open /admin first.');
+    const tasks = store.getAllTasksForGroup(groupId);
+    if (!tasks.length) return ctx.replyWithHTML('📊 <b>Tasks</b>\n\n<i>No tasks yet.</i>');
+    const lines = tasks.map(t =>
+      `${t.active ? '🟢' : '🔴'} [<code>${t.id}</code>] ${t.type === 'raid' ? '⚡' : '🎯'} <b>${t.title}</b> — ${t.reward}pts`
+    ).join('\n');
+    await ctx.replyWithHTML(`📊 <b>All Tasks</b>\n${'─'.repeat(28)}\n\n${lines}`);
   });
 
   bot.action('admin_delete_task_menu', async (ctx) => {
-    if (!adminGuard(ctx)) return;
     await ctx.answerCbQuery();
     const groupId = resolveAdminGroup(ctx);
-    if (!groupId) return ctx.reply('No group selected.');
-    const tasks = store.getAllTasksForGroup(groupId).filter(t => t.active);
-    if (!tasks.length) return ctx.replyWithHTML(`<b>No active tasks to delete.</b>`);
-    await ctx.replyWithHTML(`<b>Select a task to delete:</b>`, taskDeleteKeyboard(tasks));
+    if (!groupId) return ctx.reply('⚠️ No group selected. Open /admin first.');
+    const tasks = store.getTasksForGroup(groupId);
+    if (!tasks.length) return ctx.replyWithHTML('🗑 <b>Delete Task</b>\n\n<i>No active tasks.</i>');
+    await ctx.replyWithHTML('🗑 <b>Select task to delete:</b>', taskDeleteKeyboard(tasks));
   });
 
-  bot.action(/^del_task_(\d+)$/, async (ctx) => {
-    if (!adminGuard(ctx)) return;
-    await ctx.answerCbQuery();
-    const taskId = parseInt(ctx.match[1]);
-    const ok = store.deactivateTask(taskId);
-    await ctx.replyWithHTML(ok ? `<b>Task Deleted</b>\n\nTask #${taskId} has been deactivated.` : `Task not found.`);
-  });
+  // ── Submissions ─────────────────────────────────────────
+  bot.action('admin_subs_pending',  ctx => showSubmissions(ctx, 'pending'));
+  bot.action('admin_subs_approved', ctx => showSubmissions(ctx, 'approved'));
+  bot.action('admin_subs_rejected', ctx => showSubmissions(ctx, 'rejected'));
 
-  // ── Users management ──────────────────────────────────────────────────────
-
-  bot.action('admin_view_users', async (ctx) => {
-    if (!adminGuard(ctx)) return;
-    await ctx.answerCbQuery();
-    const users = store.getAllUsers().filter(u => !u.banned).slice(0, 20);
-    if (!users.length) return ctx.replyWithHTML(`<b>No users yet.</b>`);
-    const lines = users.map(u =>
-      `• <code>${u.id}</code> @${u.username || '?'} — ${u.points}pts${u.twitter ? ` | @${u.twitter}` : ''}`
-    ).join('\n');
-    await ctx.replyWithHTML(`<b>Users (first 20)</b>\n\n${lines}`);
-  });
-
-  bot.action('admin_ban', async (ctx) => {
-    if (!adminGuard(ctx)) return;
-    await ctx.answerCbQuery();
-    startFlow(ctx, { step: 'ban_userId' }, `<b>Ban User</b>\n\nSend the user's Telegram ID:`);
-  });
-
-  bot.action('admin_unban', async (ctx) => {
-    if (!adminGuard(ctx)) return;
-    await ctx.answerCbQuery();
-    startFlow(ctx, { step: 'unban_userId' }, `<b>Unban User</b>\n\nSend the user's Telegram ID:`);
-  });
-
-  bot.action('admin_add_admin', async (ctx) => {
-    if (!adminGuard(ctx)) return;
-    await ctx.answerCbQuery();
-    startFlow(ctx, { step: 'wladd_userId' }, `<b>Add Admin</b>\n\nSend the user's Telegram ID to grant admin access:`);
-  });
-
-  bot.action('admin_rem_admin', async (ctx) => {
-    if (!adminGuard(ctx)) return;
-    await ctx.answerCbQuery();
-    startFlow(ctx, { step: 'wlremove_userId' }, `<b>Remove Admin</b>\n\nSend the user's Telegram ID to revoke admin access:`);
-  });
-
-  // ── WL ────────────────────────────────────────────────────────────────────
-
-  bot.action('admin_wl_add', async (ctx) => {
-    if (!adminGuard(ctx)) return;
-    await ctx.answerCbQuery();
-    startFlow(ctx, { step: 'wladd_userId' }, `<b>WL Add</b>\n\nSend the user's Telegram ID or @username:`);
-  });
-
-  bot.action('admin_wl_remove', async (ctx) => {
-    if (!adminGuard(ctx)) return;
-    await ctx.answerCbQuery();
-    startFlow(ctx, { step: 'wlremove_userId' }, `<b>WL Remove</b>\n\nSend the user's Telegram ID or @username:`);
-  });
-
-  bot.action('admin_wl_view', async (ctx) => {
-    if (!adminGuard(ctx)) return;
-    await ctx.answerCbQuery();
-    const groupId = resolveAdminGroup(ctx);
-    const g = store.getGroup(groupId);
-    const wl = g?.whitelist || [];
-    if (!wl.length) return ctx.replyWithHTML(`<b>Whitelist</b>\n\n<i>Empty.</i>`);
-    await ctx.replyWithHTML(`<b>Whitelist</b> (${wl.length})\n\n${wl.map(id => `• <code>${id}</code>`).join('\n')}`);
-  });
-
-  // ── Access mode ───────────────────────────────────────────────────────────
-
-  bot.action('admin_mode_all', async (ctx) => {
-    if (!adminGuard(ctx)) return;
-    await ctx.answerCbQuery('Mode: All');
-    store.setAccessMode(resolveAdminGroup(ctx), 'all');
-    await ctx.replyWithHTML(`<b>Mode set to: All</b>`);
-  });
-
-  bot.action('admin_mode_group', async (ctx) => {
-    if (!adminGuard(ctx)) return;
-    await ctx.answerCbQuery('Mode: Group');
-    store.setAccessMode(resolveAdminGroup(ctx), 'group');
-    await ctx.replyWithHTML(`<b>Mode set to: Group</b>`);
-  });
-
-  bot.action('admin_mode_whitelist', async (ctx) => {
-    if (!adminGuard(ctx)) return;
-    await ctx.answerCbQuery('Mode: Whitelist');
-    store.setAccessMode(resolveAdminGroup(ctx), 'whitelist');
-    await ctx.replyWithHTML(`<b>Mode set to: Whitelist</b>`);
-  });
-
-  // ── Announce / DM all ─────────────────────────────────────────────────────
-
+  // ── Broadcast ────────────────────────────────────────────
   bot.action('admin_announce', async (ctx) => {
-    if (!adminGuard(ctx)) return;
     await ctx.answerCbQuery();
-    startFlow(ctx, { step: 'announce_text' }, `<b>Announce</b>\n\nSend the message to post in the group:`);
+    startFlow(ctx, { step: 'announce_msg' },
+      `📣 <b>Announce</b>\n\nType your announcement message:\n<i>Sent to group + DMed to all users</i>`);
   });
 
   bot.action('admin_dm_all', async (ctx) => {
-    if (!adminGuard(ctx)) return;
     await ctx.answerCbQuery();
-    startFlow(ctx, { step: 'dm_all_text' }, `<b>DM All Users</b>\n\nSend the message to DM to all users:`);
+    startFlow(ctx, { step: 'dm_all_msg' },
+      `📨 <b>DM All Users</b>\n\nType the message to send:`);
   });
 
-  // ── Stats ─────────────────────────────────────────────────────────────────
+  // ── Users ────────────────────────────────────────────────
+  bot.action('admin_view_users', async (ctx) => {
+    await ctx.answerCbQuery();
+    const users = store.getAllUsers().slice(0, 20);
+    if (!users.length) return ctx.replyWithHTML('👥 <b>Users</b>\n\n<i>No users yet.</i>');
+    const lines = users.map((u, i) =>
+      `${i + 1}. @${u.username} (<code>${u.id}</code>) — ${u.points}pts ${u.banned ? '🚫' : '✅'}`
+    ).join('\n');
+    await ctx.replyWithHTML(`👥 <b>Users (latest 20)</b>\n${'─'.repeat(28)}\n\n${lines}`);
+  });
 
-  bot.action('admin_stats', async (ctx) => {
-    if (!adminGuard(ctx)) return;
+  bot.action('admin_ban', async (ctx) => {
+    await ctx.answerCbQuery();
+    startFlow(ctx, { step: 'ban_id' },
+      `🚫 <b>Ban User</b>\n\nSend the <b>User ID</b>:\n<i>Forward their message to @userinfobot to get the ID</i>`);
+  });
+
+  bot.action('admin_unban', async (ctx) => {
+    await ctx.answerCbQuery();
+    startFlow(ctx, { step: 'unban_id' }, `✅ <b>Unban User</b>\n\nSend the <b>User ID</b>:`);
+  });
+
+  bot.action('admin_add_admin', async (ctx) => {
+    await ctx.answerCbQuery();
+    startFlow(ctx, { step: 'add_admin_id' }, `➕ <b>Add Admin</b>\n\nSend the <b>User ID</b>:`);
+  });
+
+  bot.action('admin_rem_admin', async (ctx) => {
+    await ctx.answerCbQuery();
+    startFlow(ctx, { step: 'rem_admin_id' }, `➖ <b>Remove Admin</b>\n\nSend the <b>User ID</b>:`);
+  });
+
+  // ── Access control ────────────────────────────────────────
+  ['all','group','whitelist'].forEach(mode => {
+    bot.action(`admin_mode_${mode}`, async (ctx) => {
+      const groupId = resolveAdminGroup(ctx);
+      if (groupId) store.setAccessMode(groupId, mode);
+      const labels = { all: 'Everyone allowed', group: 'Group members only', whitelist: 'Whitelist only' };
+      await ctx.answerCbQuery(`✅ ${labels[mode]}`, { show_alert: true });
+      await sendAdminPanel(ctx, groupId, true);
+    });
+  });
+
+  // ── Setup & Settings ──────────────────────────────────────
+  bot.action('admin_setup_topics', async (ctx) => {
     await ctx.answerCbQuery();
     const groupId = resolveAdminGroup(ctx);
-    if (!groupId) return ctx.reply('No group selected.');
-    const s   = store.getGroupStats(groupId);
-    const g   = store.getGroup(groupId);
-    const wlN = (g?.whitelist || []).length;
+    if (!groupId) return ctx.reply('⚠️ No group selected.');
     await ctx.replyWithHTML(
-      `<b>Stats — ${g?.groupName || groupId}</b>\n${'─'.repeat(28)}\n` +
-      `Tasks: ${s.activeTasks}/${s.totalTasks}  Raids: ${s.activeRaids}/${s.totalRaids}\n` +
-      `Pending: ${s.pendingSubmissions}  Approved: ${s.approvedSubmissions}\n` +
-      `Users: ${s.totalUsers}  Banned: ${s.bannedUsers}\n` +
-      `Mode: ${g?.accessMode}  Whitelist: ${wlN} users`
+      `📌 <b>Setup Forum Topics</b>\n\n` +
+      `Select a topic type to assign a thread ID.\n` +
+      `<i>Use /settopic &lt;type&gt; &lt;id&gt; in the group as an alternative.</i>`,
+      topicsSetupKeyboard(groupId)
     );
   });
 
-  // ── Topics / link ─────────────────────────────────────────────────────────
-
-  bot.action('admin_setup_topics', async (ctx) => {
-    if (!adminGuard(ctx)) return;
-    await ctx.answerCbQuery();
-    const groupId = resolveAdminGroup(ctx);
-    if (!groupId) return ctx.reply('No group selected.');
-    await ctx.replyWithHTML(`<b>Setup Forum Topics</b>\n\nSelect a topic type:`, topicsSetupKeyboard());
-  });
-
   bot.action(/^set_topic_(.+)$/, async (ctx) => {
-    if (!adminGuard(ctx)) return;
     await ctx.answerCbQuery();
     const topicType = ctx.match[1];
     const groupId   = resolveAdminGroup(ctx);
     session.setSession(ctx.from.id, { adminFlow: true, groupId, step: 'set_topic_id', topicType });
-    await ctx.replyWithHTML(`<b>Set Topic: ${topicType}</b>\n\nSend the <b>thread ID</b>:`, cancelKeyboard());
-  });
-
-  bot.action('admin_set_link', async (ctx) => {
-    if (!adminGuard(ctx)) return;
-    await ctx.answerCbQuery();
-    startFlow(ctx, { step: 'set_link' }, `<b>Set Group Link</b>\n\nSend the invite link:`);
+    await ctx.replyWithHTML(
+      `📌 <b>Set Topic: ${topicType}</b>\n\n` +
+      `Send the <b>thread ID</b>:\n` +
+      `<i>Right-click topic → Copy Link → last number in URL</i>`,
+      cancelKeyboard()
+    );
   });
 
   bot.action('admin_add_email', async (ctx) => {
-    if (!adminGuard(ctx)) return;
     await ctx.answerCbQuery();
-    startFlow(ctx, { step: 'add_email' }, `<b>Add Sheet Email</b>\n\nSend the Gmail address:`);
+    startFlow(ctx, { step: 'add_email' },
+      `📧 <b>Add Sheet Email</b>\n\nSend the Gmail to share the sheet with:`);
+  });
+
+  bot.action('admin_stats', async (ctx) => {
+    await ctx.answerCbQuery();
+    const groupId = resolveAdminGroup(ctx);
+    if (!groupId) return ctx.reply('⚠️ No group selected.');
+    const s = store.getGroupStats(groupId);
+    const g = store.getGroup(groupId);
+    await ctx.replyWithHTML(
+      `📊 <b>Stats — ${g?.groupName || groupId}</b>\n${'─'.repeat(28)}\n` +
+      `🎯 Tasks: ${s.activeTasks}/${s.totalTasks}  ⚡ Raids: ${s.activeRaids}/${s.totalRaids}\n` +
+      `⏳ Pending: ${s.pendingSubmissions}  ✅ Approved: ${s.approvedSubmissions}  ❌ Rejected: ${s.rejectedSubmissions}\n` +
+      `👥 Users: ${s.totalUsers}  🚫 Banned: ${s.bannedUsers}\n🔐 Mode: ${g?.accessMode}`
+    );
+  });
+
+  bot.action('admin_set_link', async (ctx) => {
+    await ctx.answerCbQuery();
+    startFlow(ctx, { step: 'set_link' },
+      `🔗 <b>Set Group Link</b>\n\nSend the invite link (e.g. https://t.me/yourgroup):`);
   });
 
   bot.action('admin_close', async (ctx) => {
     await ctx.answerCbQuery();
     await ctx.deleteMessage().catch(() => {});
-  });
-
-  // ── Approve / Reject submissions ──────────────────────────────────────────
-
-  bot.action(/^approve_(\d+)$/, async (ctx) => {
-    if (!adminGuard(ctx)) return;
-    const subId = parseInt(ctx.match[1]);
-    const sub   = store.approveSubmission(subId);
-    if (!sub) {
-      await ctx.answerCbQuery('Already processed.', { show_alert: false });
-      try { await ctx.editMessageReplyMarkup({ inline_keyboard: [] }); } catch {}
-      return;
-    }
-    await ctx.answerCbQuery('Approved');
-    store.addPoints(sub.userId, sub.points);
-    store.setUserField(sub.userId, 'tasksCompleted', (store.getUser(sub.userId)?.tasksCompleted || 0) + 1);
-    try {
-      await ctx.telegram.sendMessage(sub.userId,
-        `<b>✅ Submission Approved!</b>\n\n${sub.taskTitle}\n<b>+${sub.points} points</b> added to your account.`,
-        { parse_mode: 'HTML' }
-      );
-    } catch {}
-    try { await ctx.editMessageReplyMarkup({ inline_keyboard: [] }); } catch {}
-
-    // Sheets logging
-    const task = store.getTask(sub.taskId);
-    const user = store.getUser(sub.userId);
-    const group = store.getGroup(sub.groupId);
-    if (group?.sheetId) {
-      sheets.onCompletion(group.sheetId, { user: { ...user, id: sub.userId }, task: task || { id: sub.taskId, title: sub.taskTitle, taskType: '', reward: sub.points }, isRaid: task?.type === 'raid' }).catch(() => {});
-    }
-  });
-
-  bot.action(/^reject_(\d+)$/, async (ctx) => {
-    if (!adminGuard(ctx)) return;
-    const subId = parseInt(ctx.match[1]);
-    const sub   = store.rejectSubmission(subId);
-    if (!sub) {
-      await ctx.answerCbQuery('Already processed.', { show_alert: false });
-      try { await ctx.editMessageReplyMarkup({ inline_keyboard: [] }); } catch {}
-      return;
-    }
-    await ctx.answerCbQuery('Rejected');
-    try {
-      await ctx.telegram.sendMessage(sub.userId,
-        `<b>❌ Submission Rejected</b>\n\n${sub.taskTitle}\n\n<i>Contact an admin if you think this was a mistake.</i>`,
-        { parse_mode: 'HTML' }
-      );
-    } catch {}
-    try { await ctx.editMessageReplyMarkup({ inline_keyboard: [] }); } catch {}
   });
 }
 
