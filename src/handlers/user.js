@@ -423,25 +423,38 @@ async function routeTaskAction(ctx, userId, task, user, actionType) {
     }
 
     case 'like': {
-      // FIX: use Twitter API (trust-based fallback handled inside verifyLike)
       const tweetId = tw.extractTweetId(task.link);
       if (!tweetId) {
-        // No tweet ID extractable from link — trust-based
-        await completeAction(ctx, userId, task, user, 'like');
-        break;
+        return ctx.replyWithHTML(
+          `<b>Task Error</b>\n\nCould not extract tweet ID from task link. Contact an admin.`
+        );
       }
       await ctx.replyWithHTML(`<i>Verifying like via Twitter API...</i>`);
-      // Pass userId so advanced twitterVerify.js can attempt OAuth lookup
-      const likeResult = await tw.verifyLike(tweetId, user.twitter, userId).catch(() => ({
-        verified: true, trustBased: true,
+      const likeResult = await tw.verifyLike(tweetId, user.twitter, userId).catch(e => ({
+        verified: false, apiError: true,
+        reason: 'Twitter API is temporarily unavailable. Please wait 30 seconds and try again.',
       }));
-      // needsOAuth = no user token connected yet → trust-based fallback
-      if (likeResult.verified || likeResult.needsOAuth) {
+
+      if (likeResult.verified) {
         await completeAction(ctx, userId, task, user, 'like');
+      } else if (likeResult.needsOAuth) {
+        await ctx.replyWithHTML(
+          `<b>Twitter Not Connected</b>\n\n` +
+          `${likeResult.reason}\n\n` +
+          `Go to <b>Settings → Connect Twitter via OAuth</b> first.`,
+          Markup.inlineKeyboard([[Markup.button.callback('⚙️ Open Settings', 'open_settings')]])
+        );
+      } else if (likeResult.apiError) {
+        await ctx.replyWithHTML(
+          `<b>Twitter API Error</b>\n\n` +
+          `${likeResult.reason}\n\n` +
+          `<i>Tap Verify again after 30 seconds.</i>`,
+          taskCardKeyboard(task.id, task.link, task.buttonLabel, 'like')
+        );
       } else {
         await ctx.replyWithHTML(
-          `<b>Not Verified</b>\n\n${likeResult.reason || 'Could not verify your like.'}\n\n` +
-          `<i>Like the tweet first, then tap Verify again.</i>`,
+          `<b>Not Verified</b>\n\n${likeResult.reason}\n\n` +
+          `<i>Like the tweet on Twitter, then tap Verify again.</i>`,
           taskCardKeyboard(task.id, task.link, task.buttonLabel, 'like')
         );
       }
@@ -449,17 +462,38 @@ async function routeTaskAction(ctx, userId, task, user, actionType) {
     }
 
     case 'follow': {
+      const targetHandle = tw.extractUsername(task.link);
+      if (!targetHandle) {
+        return ctx.replyWithHTML(
+          `<b>Task Error</b>\n\nCould not extract Twitter username from task link. Contact an admin.`
+        );
+      }
       await ctx.replyWithHTML(`<i>Verifying follow via Twitter API...</i>`);
-      const followResult = await tw.verifyFollow(tw.extractUsername(task.link), user.twitter, userId).catch(() => ({
-        verified: true, trustBased: true,
+      const followResult = await tw.verifyFollow(targetHandle, user.twitter, userId).catch(e => ({
+        verified: false, apiError: true,
+        reason: 'Twitter API is temporarily unavailable. Please wait 30 seconds and try again.',
       }));
-      // needsOAuth = no user token connected yet → trust-based fallback
-      if (followResult.verified || followResult.needsOAuth) {
+
+      if (followResult.verified) {
         await completeAction(ctx, userId, task, user, 'follow');
+      } else if (followResult.needsOAuth) {
+        await ctx.replyWithHTML(
+          `<b>Twitter Not Connected</b>\n\n` +
+          `${followResult.reason}\n\n` +
+          `Go to <b>Settings → Connect Twitter via OAuth</b> first.`,
+          Markup.inlineKeyboard([[Markup.button.callback('⚙️ Open Settings', 'open_settings')]])
+        );
+      } else if (followResult.apiError) {
+        await ctx.replyWithHTML(
+          `<b>Twitter API Error</b>\n\n` +
+          `${followResult.reason}\n\n` +
+          `<i>Tap Verify again after 30 seconds.</i>`,
+          taskCardKeyboard(task.id, task.link, task.buttonLabel, 'follow')
+        );
       } else {
         await ctx.replyWithHTML(
-          `<b>Not Verified</b>\n\n${followResult.reason || 'Could not verify your follow.'}\n\n` +
-          `<i>Follow the account first, then tap Verify again.</i>`,
+          `<b>Not Verified</b>\n\n${followResult.reason}\n\n` +
+          `<i>Follow the account on Twitter, then tap Verify again.</i>`,
           taskCardKeyboard(task.id, task.link, task.buttonLabel, 'follow')
         );
       }
@@ -658,14 +692,20 @@ async function handleSessionInput(ctx, next) {
     const user = store.getUser(userId);
     session.clearSession(userId);
 
-    await ctx.replyWithHTML(`<i>Verifying your retweet...</i>`);
+    await ctx.replyWithHTML(`<i>Verifying your retweet via Twitter API...</i>`);
     const result = await tw.verifyRetweetUrl(text, tw.extractTweetId(task.link), user.twitter).catch(() => ({
-      verified: false,
-      reason: 'Twitter API error. Please try again in a moment.',
+      verified: false, apiError: true,
+      reason: 'Twitter API is temporarily unavailable. Please wait 30 seconds and try again.',
     }));
 
     if (result.verified) {
       return completeAction(ctx, userId, task, user, 'retweet');
+    } else if (result.apiError) {
+      return ctx.replyWithHTML(
+        `<b>Twitter API Error</b>\n\n${result.reason}\n\n` +
+        `<i>Tap Verify again after 30 seconds.</i>`,
+        taskCardKeyboard(task.id, task.link, task.buttonLabel, 'retweet')
+      );
     } else {
       return ctx.replyWithHTML(
         `<b>Not Verified</b>\n\n${result.reason}\n\n` +
@@ -693,18 +733,31 @@ async function handleSessionInput(ctx, next) {
     }
 
     session.clearSession(userId);
-    await ctx.replyWithHTML(`<i>Verifying your ${isComment ? 'comment' : 'quote tweet'}...</i>`);
+    await ctx.replyWithHTML(`<i>Verifying your ${isComment ? 'comment' : 'quote tweet'} via Twitter API...</i>`);
+
+    const apiErrFallback = () => ({
+      verified: false, apiError: true,
+      reason: 'Twitter API is temporarily unavailable. Please wait 30 seconds and try again.',
+    });
 
     const result = isComment
-      ? await tw.verifyReply(text, tw.extractTweetId(task.link), user.twitter, task.minChars || 0).catch(() => ({ verified: false, reason: 'Twitter API error.' }))
-      : await tw.verifyQuote(text, tw.extractTweetId(task.link), user.twitter, task.minChars || 0).catch(() => ({ verified: false, reason: 'Twitter API error.' }));
+      ? await tw.verifyReply(text, tw.extractTweetId(task.link), user.twitter, task.minChars || 0).catch(apiErrFallback)
+      : await tw.verifyQuote(text, tw.extractTweetId(task.link), user.twitter, task.minChars || 0).catch(apiErrFallback);
+
+    const actionKey = isComment ? 'comment' : 'quote';
 
     if (result.verified) {
-      return completeAction(ctx, userId, task, user, isComment ? 'comment' : 'quote');
+      return completeAction(ctx, userId, task, user, actionKey);
+    } else if (result.apiError) {
+      return ctx.replyWithHTML(
+        `<b>Twitter API Error</b>\n\n${result.reason}\n\n` +
+        `<i>Tap Verify again after 30 seconds.</i>`,
+        taskCardKeyboard(task.id, task.link, task.buttonLabel, actionKey)
+      );
     } else {
       return ctx.replyWithHTML(
         `<b>Not Verified</b>\n\n${result.reason}`,
-        taskCardKeyboard(task.id, task.link, task.buttonLabel, isComment ? 'comment' : 'quote')
+        taskCardKeyboard(task.id, task.link, task.buttonLabel, actionKey)
       );
     }
   }
@@ -852,23 +905,58 @@ async function handleHelp(ctx) {
   await ctx.replyWithHTML(
     `<b>How to Use This Bot</b>\n` +
     `${'─'.repeat(28)}\n\n` +
-    `<b>Menu</b>\n` +
-    `Tasks — Active Twitter/Telegram tasks\n` +
-    `Raids — Time-limited campaigns (check timer!)\n` +
-    `Leaderboard — Top earners\n` +
-    `My Profile — Your stats and rank\n` +
-    `Settings — Twitter, Wallet, Discord\n\n` +
+    `<b>User Commands</b>\n` +
+    `${'─'.repeat(28)}\n` +
+    `/start — Register and open the main menu\n` +
+    `/help — Show this help message\n` +
+    `/profile — View your profile and rank\n` +
+    `/leaderboard — View top earners\n\n` +
+
+    `<b>Menu Buttons</b>\n` +
+    `Tasks — Browse active Twitter/Telegram tasks\n` +
+    `Raids — Time-limited campaigns (beat the clock!)\n` +
+    `Leaderboard — See top point earners\n` +
+    `My Profile — Your points, rank, and linked accounts\n` +
+    `Settings — Manage Twitter, Wallet, Discord, and OAuth\n\n` +
+
     `<b>How to Complete a Task</b>\n` +
-    `1. Tap Tasks or Raids\n` +
-    `2. Select a task\n` +
-    `3. Complete the action on Twitter/Telegram\n` +
-    `4. Tap "Verify" — points are awarded instantly!\n\n` +
-    `<b>Twitter Handle</b>\n` +
-    `Set your handle in Settings once. It cannot be changed without admin help.\n\n` +
-    `<b>Comment/Quote/Retweet Tasks</b>\n` +
-    `After posting, paste your tweet URL to verify.\n\n` +
+    `1. Tap Tasks or Raids and pick one\n` +
+    `2. Complete the action on Twitter/Telegram\n` +
+    `3. Tap Verify — points are awarded instantly\n\n` +
+
+    `<b>Twitter OAuth (Required for Like & Follow)</b>\n` +
+    `Go to Settings → Connect Twitter via OAuth.\n` +
+    `This lets the bot verify your likes and follows via the real Twitter API.\n` +
+    `Without it, Like and Follow tasks cannot be completed.\n\n` +
+
+    `<b>Comment / Quote / Retweet Tasks</b>\n` +
+    `After posting on Twitter, paste the URL of YOUR tweet to verify.\n` +
+    `Example: https://x.com/yourname/status/12345\n\n` +
+
     `<b>Raids</b>\n` +
-    `Raids are time-limited! Complete them before they expire.`
+    `Time-limited campaigns — complete them before the timer expires!\n\n` +
+
+    `<b>Anti-Cheat Rules</b>\n` +
+    `• Twitter handle is locked after first set — contact an admin to change it\n` +
+    `• Each task can only be completed once per user\n` +
+    `• All Twitter actions are verified via the Twitter API\n\n` +
+
+    `<b>Admin Commands</b> <i>(admin DM only)</i>\n` +
+    `${'─'.repeat(28)}\n` +
+    `/admin — Open the admin wizard panel\n` +
+    `/commands — Show all admin commands\n` +
+    `/settwitter &lt;userId&gt; @handle — Force-set a user's Twitter handle\n` +
+    `/wladd &lt;userId&gt; — Add user to whitelist\n` +
+    `/wlremove &lt;userId&gt; — Remove user from whitelist\n\n` +
+
+    `<b>Owner Commands</b> <i>(owner DM only)</i>\n` +
+    `${'─'.repeat(28)}\n` +
+    `/addgroup — Register current group (run inside group) or /addgroup &lt;id&gt; &lt;name&gt;\n` +
+    `/removegroup — Unregister group (run inside group) or /removegroup &lt;id&gt;\n` +
+    `/listgroups — List all registered groups\n` +
+    `/setsheet &lt;groupId&gt; &lt;sheetId&gt; — Link a Google Sheet to a group\n` +
+    `/broadcast &lt;message&gt; — DM all bot users\n` +
+    `/ownerhelp — Show owner commands + service account email`
   );
 }
 
@@ -936,13 +1024,14 @@ function register(bot) {
   bot.hears('Settings',    handleSettings);
   bot.hears('Help',        handleHelp);
 
-  bot.action('set_twitter',          handleSetTwitter);
+  bot.action('set_twitter',           handleSetTwitter);
   bot.action('connect_twitter_oauth', handleConnectTwitterOAuth);
-  bot.action('set_wallet',           handleSetWallet);
-  bot.action('set_discord',          handleSetDiscord);
-  bot.action('refresh_profile',      ctx => handleMyProfile(ctx));
-  bot.action('close_msg',            async ctx => { await ctx.answerCbQuery(); await ctx.deleteMessage().catch(() => {}); });
-  bot.action('cancel_flow',          handleCancelFlow);
+  bot.action('open_settings',         async ctx => { await ctx.answerCbQuery(); return handleSettings(ctx); });
+  bot.action('set_wallet',            handleSetWallet);
+  bot.action('set_discord',           handleSetDiscord);
+  bot.action('refresh_profile',       ctx => handleMyProfile(ctx));
+  bot.action('close_msg',             async ctx => { await ctx.answerCbQuery(); await ctx.deleteMessage().catch(() => {}); });
+  bot.action('cancel_flow',           handleCancelFlow);
 
   bot.action(/^view_task_(\d+)$/, handleViewTask);
   bot.action(/^do_submit_(\d+)$/, handleDoSubmit);

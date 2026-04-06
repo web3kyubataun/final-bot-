@@ -1,10 +1,11 @@
 /**
- * twitterVerify.js — Twitter action verification
+ * twitterVerify.js — Twitter action verification (strict API mode)
  *
- * Verification strategy:
- *   - If user has OAuth tokens stored → use real API calls
- *   - If no tokens / API error → trust-based fallback (returns verified: true with trustBased flag)
- *   - Bearer token (TWITTER_BEARER_TOKEN) used for read-only checks (retweet/comment/quote URL verification)
+ * All verifications hit the real Twitter API.
+ * - No trust-based fallbacks for task completion.
+ * - If user has no OAuth tokens → needsOAuth: true
+ * - If Twitter API is unavailable / rate-limited → apiError: true
+ * - Bearer token used for read-only checks (retweet/comment/quote)
  */
 
 const { TwitterApi } = require('twitter-api-v2');
@@ -27,6 +28,31 @@ function extractUsername(url) {
   return m ? m[1].toLowerCase() : null;
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function apiErrorResult(e) {
+  const status = e?.code || e?.status || e?.data?.status;
+  if (status === 429) {
+    return {
+      verified: false,
+      apiError: true,
+      reason: 'Twitter API rate limit reached. Please wait 30 seconds and try again.',
+    };
+  }
+  if (status === 401 || status === 403) {
+    return {
+      verified: false,
+      apiError: true,
+      reason: 'Twitter API authorization error. Please reconnect your Twitter account via Settings → Connect Twitter via OAuth.',
+    };
+  }
+  return {
+    verified: false,
+    apiError: true,
+    reason: 'Twitter API is temporarily unavailable. Please wait 30 seconds and try again.',
+  };
+}
+
 // ── OAuth client helper ───────────────────────────────────────────────────────
 
 async function getUserTwitterClient(telegramUserId) {
@@ -41,7 +67,8 @@ async function getUserTwitterClient(telegramUserId) {
         clientId:     process.env.TWITTER_CLIENT_ID,
         clientSecret: process.env.TWITTER_CLIENT_SECRET,
       });
-      const { accessToken, refreshToken, expiresIn } = await refreshClient.refreshOAuth2Token(tokens.refresh_token);
+      const { accessToken, refreshToken, expiresIn } =
+        await refreshClient.refreshOAuth2Token(tokens.refresh_token);
       saveTokens(telegramUserId, accessToken, refreshToken, expiresIn);
       return new TwitterApi(accessToken);
     }
@@ -61,56 +88,96 @@ function bearerClient() {
 // ── verifyLike ────────────────────────────────────────────────────────────────
 
 async function verifyLike(tweetId, twitterUsername, telegramUserId) {
-  try {
-    const client = await getUserTwitterClient(telegramUserId);
-    if (!client) return { verified: true, trustBased: true };
+  const client = await getUserTwitterClient(telegramUserId);
 
-    const me = await client.v2.me();
+  if (!client) {
+    return {
+      verified: false,
+      needsOAuth: true,
+      reason:
+        'Your Twitter account is not connected. Go to Settings → Connect Twitter via OAuth to enable Like verification.',
+    };
+  }
+
+  try {
+    const me    = await client.v2.me();
     const likes = await client.v2.userLikedTweets(me.data.id, { max_results: 100 });
-    const ids = (likes.data?.data || []).map(t => t.id);
-    return { verified: ids.includes(String(tweetId)) };
-  } catch {
-    return { verified: true, trustBased: true };
+    const ids   = (likes.data?.data || []).map(t => t.id);
+    if (ids.includes(String(tweetId))) {
+      return { verified: true };
+    }
+    return {
+      verified: false,
+      reason: 'Like not detected on your Twitter account. Like the tweet first, then try again.',
+    };
+  } catch (e) {
+    return apiErrorResult(e);
   }
 }
 
 // ── verifyFollow ──────────────────────────────────────────────────────────────
 
 async function verifyFollow(targetUsername, twitterUsername, telegramUserId) {
-  try {
-    const client = await getUserTwitterClient(telegramUserId);
-    if (!client) return { verified: true, trustBased: true };
+  const client = await getUserTwitterClient(telegramUserId);
 
+  if (!client) {
+    return {
+      verified: false,
+      needsOAuth: true,
+      reason:
+        'Your Twitter account is not connected. Go to Settings → Connect Twitter via OAuth to enable Follow verification.',
+    };
+  }
+
+  try {
     const me     = await client.v2.me();
     const target = await client.v2.userByUsername(targetUsername);
-    if (!target?.data?.id) return { verified: false, reason: 'Target account not found on Twitter.' };
+    if (!target?.data?.id) {
+      return { verified: false, reason: 'Target account not found on Twitter.' };
+    }
 
     const following = await client.v2.following(me.data.id, { max_results: 1000 });
     const ids = (following.data?.data || []).map(u => u.id);
-    return { verified: ids.includes(target.data.id) };
-  } catch {
-    return { verified: true, trustBased: true };
+    if (ids.includes(target.data.id)) {
+      return { verified: true };
+    }
+    return {
+      verified: false,
+      reason: `Follow not detected. Follow @${targetUsername} on Twitter first, then try again.`,
+    };
+  } catch (e) {
+    return apiErrorResult(e);
   }
 }
 
 // ── verifyRetweetUrl ──────────────────────────────────────────────────────────
 
 async function verifyRetweetUrl(retweetUrl, originalTweetId, twitterUsername) {
+  if (!TWITTER_URL_RE.test(retweetUrl)) {
+    return { verified: false, reason: 'Invalid URL. Please submit a Twitter/X link.' };
+  }
+  const retweetId = extractTweetId(retweetUrl);
+  if (!retweetId) {
+    return { verified: false, reason: 'Could not extract tweet ID from your URL.' };
+  }
+
+  const client = bearerClient();
+  if (!client) {
+    return {
+      verified: false,
+      apiError: true,
+      reason: 'Twitter Bearer Token not configured. Please contact an admin.',
+    };
+  }
+
   try {
-    if (!TWITTER_URL_RE.test(retweetUrl)) {
-      return { verified: false, reason: 'Invalid URL. Please submit a Twitter/X link.' };
-    }
-    const retweetId = extractTweetId(retweetUrl);
-    if (!retweetId) return { verified: false, reason: 'Could not extract tweet ID from your URL.' };
-
-    const client = bearerClient();
-    if (!client) return { verified: true, trustBased: true };
-
     const tweet = await client.v2.singleTweet(retweetId, {
       'tweet.fields': ['referenced_tweets', 'author_id'],
       expansions:     ['author_id'],
     });
-    if (!tweet?.data) return { verified: false, reason: 'Tweet not found.' };
+    if (!tweet?.data) {
+      return { verified: false, reason: 'Tweet not found. Make sure the URL is correct.' };
+    }
 
     const refs      = tweet.data.referenced_tweets || [];
     const isRetweet = refs.some(r => r.type === 'retweeted' && r.id === originalTweetId);
@@ -126,29 +193,39 @@ async function verifyRetweetUrl(retweetUrl, originalTweetId, twitterUsername) {
     }
 
     return { verified: true };
-  } catch {
-    return { verified: true, trustBased: true };
+  } catch (e) {
+    return apiErrorResult(e);
   }
 }
 
 // ── verifyReply (comment) ─────────────────────────────────────────────────────
 
 async function verifyReply(commentUrl, originalTweetId, twitterUsername, minChars) {
+  if (!TWITTER_URL_RE.test(commentUrl)) {
+    return { verified: false, reason: 'Invalid URL. Please submit a Twitter/X link.' };
+  }
+  const commentId = extractTweetId(commentUrl);
+  if (!commentId) {
+    return { verified: false, reason: 'Could not extract tweet ID from your URL.' };
+  }
+
+  const client = bearerClient();
+  if (!client) {
+    return {
+      verified: false,
+      apiError: true,
+      reason: 'Twitter Bearer Token not configured. Please contact an admin.',
+    };
+  }
+
   try {
-    if (!TWITTER_URL_RE.test(commentUrl)) {
-      return { verified: false, reason: 'Invalid URL. Please submit a Twitter/X link.' };
-    }
-    const commentId = extractTweetId(commentUrl);
-    if (!commentId) return { verified: false, reason: 'Could not extract tweet ID from your URL.' };
-
-    const client = bearerClient();
-    if (!client) return { verified: true, trustBased: true };
-
     const tweet = await client.v2.singleTweet(commentId, {
       'tweet.fields': ['referenced_tweets', 'text', 'author_id'],
       expansions:     ['author_id'],
     });
-    if (!tweet?.data) return { verified: false, reason: 'Tweet not found.' };
+    if (!tweet?.data) {
+      return { verified: false, reason: 'Tweet not found. Make sure the URL is correct.' };
+    }
 
     const refs    = tweet.data.referenced_tweets || [];
     const isReply = refs.some(r => r.type === 'replied_to');
@@ -157,7 +234,10 @@ async function verifyReply(commentUrl, originalTweetId, twitterUsername, minChar
     }
 
     if (minChars > 0 && tweet.data.text.length < minChars) {
-      return { verified: false, reason: `Comment too short — minimum ${minChars} characters required.` };
+      return {
+        verified: false,
+        reason: `Comment too short — minimum ${minChars} characters required (yours: ${tweet.data.text.length}).`,
+      };
     }
 
     if (twitterUsername) {
@@ -168,29 +248,39 @@ async function verifyReply(commentUrl, originalTweetId, twitterUsername, minChar
     }
 
     return { verified: true };
-  } catch {
-    return { verified: true, trustBased: true };
+  } catch (e) {
+    return apiErrorResult(e);
   }
 }
 
 // ── verifyQuote ───────────────────────────────────────────────────────────────
 
 async function verifyQuote(quoteUrl, originalTweetId, twitterUsername, minChars) {
+  if (!TWITTER_URL_RE.test(quoteUrl)) {
+    return { verified: false, reason: 'Invalid URL. Please submit a Twitter/X link.' };
+  }
+  const quoteId = extractTweetId(quoteUrl);
+  if (!quoteId) {
+    return { verified: false, reason: 'Could not extract tweet ID from your URL.' };
+  }
+
+  const client = bearerClient();
+  if (!client) {
+    return {
+      verified: false,
+      apiError: true,
+      reason: 'Twitter Bearer Token not configured. Please contact an admin.',
+    };
+  }
+
   try {
-    if (!TWITTER_URL_RE.test(quoteUrl)) {
-      return { verified: false, reason: 'Invalid URL. Please submit a Twitter/X link.' };
-    }
-    const quoteId = extractTweetId(quoteUrl);
-    if (!quoteId) return { verified: false, reason: 'Could not extract tweet ID from your URL.' };
-
-    const client = bearerClient();
-    if (!client) return { verified: true, trustBased: true };
-
     const tweet = await client.v2.singleTweet(quoteId, {
       'tweet.fields': ['referenced_tweets', 'text', 'author_id'],
       expansions:     ['author_id'],
     });
-    if (!tweet?.data) return { verified: false, reason: 'Tweet not found.' };
+    if (!tweet?.data) {
+      return { verified: false, reason: 'Tweet not found. Make sure the URL is correct.' };
+    }
 
     const refs    = tweet.data.referenced_tweets || [];
     const isQuote = refs.some(r => r.type === 'quoted');
@@ -199,7 +289,10 @@ async function verifyQuote(quoteUrl, originalTweetId, twitterUsername, minChars)
     }
 
     if (minChars > 0 && tweet.data.text.length < minChars) {
-      return { verified: false, reason: `Quote tweet too short — minimum ${minChars} characters required.` };
+      return {
+        verified: false,
+        reason: `Quote too short — minimum ${minChars} characters required (yours: ${tweet.data.text.length}).`,
+      };
     }
 
     if (twitterUsername) {
@@ -210,8 +303,8 @@ async function verifyQuote(quoteUrl, originalTweetId, twitterUsername, minChars)
     }
 
     return { verified: true };
-  } catch {
-    return { verified: true, trustBased: true };
+  } catch (e) {
+    return apiErrorResult(e);
   }
 }
 
