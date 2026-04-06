@@ -22,10 +22,12 @@ const session = require('../sessions');
 const config  = require('../config');
 const { getBotUsername } = require('../botInfo');
 const {
-  mainMenuKeyboard, profileKeyboard, settingsKeyboard,
+  mainMenuKeyboard, profileKeyboard, settingsKeyboard, oauthConnectKeyboard,
   taskListKeyboard, taskCardKeyboard, taskCardDMKeyboard, cancelKeyboard,
 } = require('../utils/keyboard');
 const tw = require('../utils/twitterVerify');
+const { generateAuthUrl } = require('../oauth/twitterOAuth');
+const { getTokens }       = require('../db/sqlite');
 const { Markup } = require('telegraf');
 
 const TASK_TYPE_LABELS = {
@@ -787,15 +789,59 @@ async function handleMyProfile(ctx) {
 // ═══════════════════════════════════════════════
 
 async function handleSettings(ctx) {
-  const user = store.getUser(ctx.from.id);
+  if (ctx.callbackQuery) await ctx.answerCbQuery().catch(() => {});
+  const userId = ctx.from.id;
+  const user   = store.getUser(userId);
   if (!user) return ctx.replyWithHTML('Please use /start first.');
+
+  const tokens   = getTokens(userId);
+  const hasOAuth = !!(tokens?.access_token);
+
+  const oauthStatus = hasOAuth
+    ? `✅ <b>Connected</b> (real API verification active)`
+    : `❌ <b>Not connected</b> (trust-based fallback)`;
+
   await ctx.replyWithHTML(
     `<b>Settings</b>\n${'─'.repeat(28)}\n` +
-    `Twitter: <b>${user.twitter ? `@${user.twitter}` : 'Not set'}</b>${user.twitterLocked ? ' <i>(locked — contact admin to change)</i>' : ''}\n` +
+    `Twitter: <b>${user.twitter ? `@${user.twitter}` : 'Not set'}</b>` +
+    `${user.twitterLocked ? ' <i>(locked — contact admin to change)</i>' : ''}\n` +
+    `Twitter OAuth: ${oauthStatus}\n` +
     `Wallet: <b>${user.wallet || 'Not set'}</b>\n` +
     `Discord: <b>${user.discord || 'Not set'}</b>`,
-    settingsKeyboard()
+    settingsKeyboard(hasOAuth)
   );
+}
+
+async function handleConnectTwitterOAuth(ctx) {
+  await ctx.answerCbQuery().catch(() => {});
+  const userId = ctx.from.id;
+
+  if (!config.TWITTER_CLIENT_ID || !process.env.TWITTER_CALLBACK_URL) {
+    return ctx.replyWithHTML(
+      `<b>OAuth Not Configured</b>\n\n` +
+      `The bot owner has not set up Twitter OAuth yet.\n` +
+      `<i>Contact an admin for assistance.</i>`
+    );
+  }
+
+  try {
+    const url = await generateAuthUrl(userId);
+    await ctx.replyWithHTML(
+      `<b>Connect Twitter via OAuth</b>\n${'─'.repeat(28)}\n\n` +
+      `Tap the button below to authorize on Twitter.\n\n` +
+      `<b>What this enables:</b>\n` +
+      `• Real-time verification of Likes and Follows\n` +
+      `• More accurate anti-cheat checks\n` +
+      `• Your Twitter handle is auto-set after authorization\n\n` +
+      `<i>You will be redirected back automatically after approving.</i>`,
+      oauthConnectKeyboard(url)
+    );
+  } catch (e) {
+    console.error('[OAuth] generateAuthUrl failed:', e.message);
+    await ctx.replyWithHTML(
+      `<b>OAuth Error</b>\n\nCould not generate authorization link. Please try again later.`
+    );
+  }
 }
 
 // ═══════════════════════════════════════════════
@@ -890,12 +936,13 @@ function register(bot) {
   bot.hears('Settings',    handleSettings);
   bot.hears('Help',        handleHelp);
 
-  bot.action('set_twitter',     handleSetTwitter);
-  bot.action('set_wallet',      handleSetWallet);
-  bot.action('set_discord',     handleSetDiscord);
-  bot.action('refresh_profile', ctx => handleMyProfile(ctx));
-  bot.action('close_msg',       async ctx => { await ctx.answerCbQuery(); await ctx.deleteMessage().catch(() => {}); });
-  bot.action('cancel_flow',     handleCancelFlow);
+  bot.action('set_twitter',          handleSetTwitter);
+  bot.action('connect_twitter_oauth', handleConnectTwitterOAuth);
+  bot.action('set_wallet',           handleSetWallet);
+  bot.action('set_discord',          handleSetDiscord);
+  bot.action('refresh_profile',      ctx => handleMyProfile(ctx));
+  bot.action('close_msg',            async ctx => { await ctx.answerCbQuery(); await ctx.deleteMessage().catch(() => {}); });
+  bot.action('cancel_flow',          handleCancelFlow);
 
   bot.action(/^view_task_(\d+)$/, handleViewTask);
   bot.action(/^do_submit_(\d+)$/, handleDoSubmit);

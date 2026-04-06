@@ -19,12 +19,26 @@ function profileKeyboard() {
   ]);
 }
 
-function settingsKeyboard() {
+function settingsKeyboard(hasOAuth = false) {
   return Markup.inlineKeyboard([
-    [Markup.button.callback('🐦 Set Twitter Handle', 'set_twitter')],
-    [Markup.button.callback('💳 Set Wallet', 'set_wallet')],
+    [Markup.button.callback(
+      hasOAuth ? '🐦 Twitter Handle (locked)' : '🐦 Set Twitter Handle',
+      'set_twitter'
+    )],
+    [Markup.button.callback(
+      hasOAuth ? '🔗 Reconnect Twitter via OAuth' : '🔗 Connect Twitter via OAuth',
+      'connect_twitter_oauth'
+    )],
+    [Markup.button.callback('💳 Set Wallet',  'set_wallet')],
     [Markup.button.callback('🎮 Set Discord', 'set_discord')],
     [Markup.button.callback('Close', 'close_msg')],
+  ]);
+}
+
+function oauthConnectKeyboard(url) {
+  return Markup.inlineKeyboard([
+    [Markup.button.url('🔗 Authorize on Twitter', url)],
+    [Markup.button.callback('❌ Cancel', 'cancel_flow')],
   ]);
 }
 
@@ -198,6 +212,7 @@ module.exports = {
   mainMenuKeyboard,
   profileKeyboard,
   settingsKeyboard,
+  oauthConnectKeyboard,
   taskListKeyboard,
   taskCardKeyboard,
   taskCardDMKeyboard,
