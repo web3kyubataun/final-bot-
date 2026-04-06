@@ -221,24 +221,6 @@ function adminSetTwitter(userId, cleanUsername) {
  * @param {number} minChars        min comment chars (0 = no limit)
  * @param {number} durationMinutes raid duration in minutes (1-1440), null for tasks
  */
-/**
- * Normalize a task link so it is always a valid HTTP(S) URL.
- *   @gdhdchhh           → https://t.me/gdhdchhh
- *   t.me/gdhdchhh       → https://t.me/gdhdchhh
- *   https://x.com/...   → (unchanged)
- */
-function normalizeTaskLink(link, platform) {
-  if (!link) return '';
-  const s = String(link).trim();
-  if (s.startsWith('http://') || s.startsWith('https://')) return s;
-  if (s.startsWith('t.me/')) return 'https://' + s;
-  // Bare @username or plain word → Telegram link for telegram tasks, leave others as-is
-  if (s.startsWith('@')) return `https://t.me/${s.slice(1)}`;
-  // Bare username with no special chars — only assume t.me for telegram platform
-  if (/^[A-Za-z0-9_]{3,50}$/.test(s) && platform === 'telegram') return `https://t.me/${s}`;
-  return s;
-}
-
 function createTask(groupId, title, link, reward, type, buttonLabel, platform, taskType, taskTypes, minChars, durationMinutes) {
   const id = ++store.taskCounter;
   const clampedDuration = durationMinutes ? Math.min(Math.max(1, parseInt(durationMinutes) || 60), 1440) : null;
@@ -250,7 +232,7 @@ function createTask(groupId, title, link, reward, type, buttonLabel, platform, t
     id,
     groupId: String(groupId),
     title,
-    link: normalizeTaskLink(link, platform),
+    link: link || '',
     reward: parseInt(reward) || 0,
     type: type || 'task',
     buttonLabel: buttonLabel || null,

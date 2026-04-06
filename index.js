@@ -1,30 +1,53 @@
 require('dotenv').config();
+
+const express  = require('express');
 const { Telegraf } = require('telegraf');
-const config    = require('./src/config');          // FIX: was ./config (missing root file)
-const botInfo   = require('./src/botInfo');          // FIX: was ./botInfo (missing root file)
+
+const config    = require('./src/config');
+const botInfo   = require('./src/botInfo');
 const { userMiddleware } = require('./src/middleware/auth');
-const { startScheduler }  = require('./src/scheduler');
+const { startScheduler } = require('./src/scheduler');
+const { setBotInstance } = require('./src/oauth/twitterOAuth');
+const authCallback       = require('./src/routes/authCallback');
 
 const ownerHandler = require('./src/handlers/owner');
 const groupHandler = require('./src/handlers/group');
 const adminHandler = require('./src/handlers/admin');
 const userHandler  = require('./src/handlers/user');
 
+// ── Validate required env vars ────────────────────────────────────────────────
+
 if (!config.BOT_TOKEN) {
-  console.error('BOT_TOKEN is missing from environment variables');
+  console.error('[Fatal] BOT_TOKEN is missing. Set it in your environment variables.');
   process.exit(1);
 }
 if (!config.OWNER_IDS.length) {
-  console.error('BOT_OWNER_IDS is missing from environment variables');
+  console.error('[Fatal] BOT_OWNER_IDS is missing. Set at least one owner Telegram ID.');
   process.exit(1);
 }
 
+// ── Express HTTP server (required for Render/Railway health check + OAuth) ────
+
+const app = express();
+
+app.get('/health', (_, res) => res.json({ status: 'ok', uptime: process.uptime() }));
+app.use(authCallback);
+app.use((_, res) => res.status(404).send('Not found'));
+
+const PORT = config.PORT || 3000;
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`[HTTP] Express listening on port ${PORT}`);
+});
+
+// ── Bot setup ─────────────────────────────────────────────────────────────────
+
 const bot = new Telegraf(config.BOT_TOKEN);
 
+// Request logger
 bot.use(async (ctx, next) => {
   if (ctx.from) {
     const who  = ctx.from.username ? `@${ctx.from.username}` : `id:${ctx.from.id}`;
-    const what = ctx.message?.text?.slice(0, 60) || ctx.callbackQuery?.data || ctx.updateType;
+    const what = ctx.message?.text?.slice(0, 80) || ctx.callbackQuery?.data || ctx.updateType;
     console.log(`[${new Date().toISOString().slice(0, 19)}] ${who} → ${what}`);
   }
   return next();
@@ -32,12 +55,13 @@ bot.use(async (ctx, next) => {
 
 bot.use(userMiddleware);
 
-// Order matters: admin session middleware must run first
+// Handler registration order matters: admin session must run before user
 adminHandler.register(bot);
 ownerHandler.register(bot);
 groupHandler.register(bot);
 userHandler.register(bot);
 
+// Catch-all for unknown commands (DM only)
 bot.on('message', async (ctx) => {
   if (ctx.chat?.type !== 'private') return;
   const text = ctx.message?.text;
@@ -47,14 +71,17 @@ bot.on('message', async (ctx) => {
   );
 });
 
+// Global error handler
 bot.catch((err, ctx) => {
-  if (err?.response?.error_code === 403) return;
+  if (err?.response?.error_code === 403) return; // bot blocked by user
   if (err?.response?.error_code === 400 && err?.message?.includes('message is not modified')) return;
-  console.error(`[${ctx?.updateType}] ${err.message}`);
-  ctx?.reply('An error occurred. Please try again.').catch(() => {});
+  console.error(`[Bot Error] [${ctx?.updateType}] ${err.message}`);
+  ctx?.reply?.('An error occurred. Please try again.').catch(() => {});
 });
 
-async function launch() {
+// ── Bot launch with retry (handles 409 conflict on rolling deploys) ───────────
+
+async function launchBot(attempt = 1) {
   try {
     await bot.telegram.deleteWebhook({ drop_pending_updates: false });
     console.log('[Bot] Webhook cleared.');
@@ -62,22 +89,27 @@ async function launch() {
     console.warn('[Bot] Could not clear webhook:', e.message);
   }
 
-  bot.launch()
-    .then(async () => {
-      const me = await bot.telegram.getMe();
-      botInfo.setBotUsername(me.username);
-      console.log(`@${me.username} is running (polling)`);
-      console.log(`Owners: ${config.OWNER_IDS.join(', ')}`);
-      // Start scheduler AFTER bot username is set
-      startScheduler(bot.telegram);
-    })
-    .catch(err => {
-      console.error('Failed to launch:', err.message);
-      process.exit(1);
-    });
+  try {
+    await bot.launch();
+    const me = await bot.telegram.getMe();
+    botInfo.setBotUsername(me.username);
+    setBotInstance(bot);
+    console.log(`[Bot] @${me.username} is online (polling)`);
+    console.log(`[Bot] Owners: ${config.OWNER_IDS.join(', ')}`);
+    startScheduler(bot.telegram);
+  } catch (err) {
+    console.error(`[Bot] Launch failed (attempt ${attempt}): ${err.message}`);
+    if (attempt < 12) {
+      const wait = Math.min(attempt * 5000, 30000);
+      console.log(`[Bot] Retrying in ${wait / 1000}s...`);
+      setTimeout(() => launchBot(attempt + 1), wait);
+    } else {
+      console.error('[Bot] Max retries reached. HTTP server still running.');
+    }
+  }
 }
 
-launch();
+launchBot();
 
-process.once('SIGINT',  () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+process.once('SIGINT',  () => { bot.stop('SIGINT');  process.exit(0); });
+process.once('SIGTERM', () => { bot.stop('SIGTERM'); process.exit(0); });

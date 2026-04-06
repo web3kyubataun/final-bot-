@@ -2,8 +2,6 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Copy BOTH package.json AND package-lock.json so Docker
-# invalidates the npm install cache whenever either file changes
 COPY package*.json ./
 
 RUN npm install --production
