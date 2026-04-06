@@ -1,22 +1,22 @@
 FROM node:20-alpine
 
-# Create app directory
 WORKDIR /app
 
-# Copy package files
-COPY package.json ./
+# Copy BOTH package.json AND package-lock.json so Docker
+# invalidates the npm install cache whenever either file changes
+COPY package*.json ./
 
-# Install dependencies
 RUN npm install --production
 
-# Copy source code
 COPY . .
 
-# Create a non-root user for security
 RUN addgroup -g 1001 -S nodejs && \
     adduser -S botuser -u 1001 -G nodejs
 
 USER botuser
 
-# Bot runs in polling mode — no port needed
-CMD ["node", "src/index.js"]
+EXPOSE 3000
+
+ENV PORT=3000
+
+CMD ["node", "index.js"]
