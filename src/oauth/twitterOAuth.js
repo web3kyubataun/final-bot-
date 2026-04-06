@@ -39,11 +39,11 @@ async function handleCallback(code, state) {
 
   saveTokens(row.telegram_user_id, accessToken, refreshToken, expiresIn);
 
-  // Auto-fetch and set Twitter handle if not already set
+  let handle = null;
   try {
     const userClient = new TwitterApi(accessToken);
     const me = await userClient.v2.me({ 'user.fields': ['username'] });
-    const handle = me?.data?.username?.toLowerCase();
+    handle = me?.data?.username?.toLowerCase();
 
     if (handle) {
       const user = store.getUser(row.telegram_user_id);
@@ -59,7 +59,7 @@ async function handleCallback(code, state) {
     if (_bot) {
       await _bot.telegram.sendMessage(
         row.telegram_user_id,
-        `✅ <b>Twitter Connected!</b>\n\n@${handle || 'unknown'} is now linked to your account.\nFollow/Like tasks will now be verified via the Twitter API.`,
+        `✅ <b>Twitter Connected!</b>\n\n@${handle || 'unknown'} is now linked to your account.\nFollow/Like tasks will now be verified via the real Twitter API.`,
         { parse_mode: 'HTML' }
       );
     }
@@ -67,7 +67,7 @@ async function handleCallback(code, state) {
     console.error('[OAuth] Post-callback auto-fetch failed:', e.message);
   }
 
-  return { telegramUserId: row.telegram_user_id };
+  return { telegramUserId: row.telegram_user_id, handle };
 }
 
 module.exports = { generateAuthUrl, handleCallback, setBotInstance };

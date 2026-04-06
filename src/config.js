@@ -1,5 +1,3 @@
-require('dotenv').config();
-
 module.exports = {
   BOT_TOKEN:             process.env.BOT_TOKEN || '',
   OWNER_IDS:             (process.env.BOT_OWNER_IDS || process.env.OWNER_IDS || '')
@@ -9,5 +7,5 @@ module.exports = {
   TWITTER_CALLBACK_URL:  process.env.TWITTER_CALLBACK_URL || '',
   TWITTER_BEARER_TOKEN:  process.env.TWITTER_BEARER_TOKEN || '',
   GOOGLE_SERVICE_ACCOUNT: process.env.GOOGLE_SERVICE_ACCOUNT || '',
-  PORT:                  parseInt(process.env.PORT || '3000', 10),
+  PORT:                  parseInt(process.env.PORT || '3001', 10),
 };

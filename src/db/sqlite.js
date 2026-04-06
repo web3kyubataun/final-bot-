@@ -1,19 +1,15 @@
 /**
- * sqlite.js — Lightweight JSON-file token storage.
- * Replaces better-sqlite3 (which requires native compilation).
- * Stores OAuth tokens and PKCE states in /tmp/oauth_tokens.json and /tmp/oauth_states.json
+ * sqlite.js — JSON-file token storage for OAuth tokens & PKCE states.
+ * Named sqlite.js for drop-in compatibility with existing imports.
  */
 
 const fs   = require('fs');
 const path = require('path');
 
-// Store in ./data/ directory (project root) — survives restarts on most hosts.
-// Override via env vars for persistent disk mounts (e.g. Render Disks at /data).
-const DATA_DIR    = process.env.OAUTH_DATA_DIR || path.join(__dirname, '..', '..', 'data');
+const DATA_DIR    = process.env.OAUTH_DATA_DIR || process.env.DATA_DIR || path.join(__dirname, '..', '..', 'data');
 const TOKENS_PATH = process.env.OAUTH_TOKENS_PATH || path.join(DATA_DIR, 'oauth_tokens.json');
 const STATES_PATH = process.env.OAUTH_STATES_PATH  || path.join(DATA_DIR, 'oauth_states.json');
 
-// Ensure data directory exists
 try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {}
 
 function readJson(filePath) {
@@ -23,8 +19,6 @@ function readJson(filePath) {
 function writeJson(filePath, data) {
   try { fs.writeFileSync(filePath, JSON.stringify(data), 'utf8'); } catch {}
 }
-
-// ── Tokens ────────────────────────────────────────────────────────────────────
 
 function saveTokens(telegramUserId, accessToken, refreshToken, expiresInSeconds) {
   const tokens = readJson(TOKENS_PATH);
@@ -46,8 +40,6 @@ function deleteTokens(telegramUserId) {
   delete tokens[String(telegramUserId)];
   writeJson(TOKENS_PATH, tokens);
 }
-
-// ── OAuth States (PKCE) ───────────────────────────────────────────────────────
 
 function saveState(state, telegramUserId, codeVerifier) {
   const states = readJson(STATES_PATH);

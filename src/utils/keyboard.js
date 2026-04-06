@@ -22,11 +22,7 @@ function profileKeyboard() {
 function settingsKeyboard(hasOAuth = false) {
   return Markup.inlineKeyboard([
     [Markup.button.callback(
-      hasOAuth ? '🐦 Twitter Handle (locked)' : '🐦 Set Twitter Handle',
-      'set_twitter'
-    )],
-    [Markup.button.callback(
-      hasOAuth ? '🔗 Reconnect Twitter via OAuth' : '🔗 Connect Twitter via OAuth',
+      hasOAuth ? '🔗 Twitter: Connected (locked)' : '🔗 Connect Twitter via OAuth',
       'connect_twitter_oauth'
     )],
     [Markup.button.callback('💳 Set Wallet',  'set_wallet')],
@@ -53,9 +49,7 @@ function taskListKeyboard(tasks) {
 
 function taskCardKeyboard(taskId, link, buttonLabel, taskType) {
   const rows = [];
-  if (link) {
-    rows.push([Markup.button.url(buttonLabel || 'Open Link', link)]);
-  }
+  if (link) rows.push([Markup.button.url(buttonLabel || 'Open Link', link)]);
   const verifyLabel = ['comment', 'quote', 'retweet'].includes(taskType)
     ? '📎 Submit URL'
     : '✅ Verify';
@@ -66,9 +60,7 @@ function taskCardKeyboard(taskId, link, buttonLabel, taskType) {
 
 function taskCardDMKeyboard(taskId, link, buttonLabel, botName) {
   const rows = [];
-  if (link) {
-    rows.push([Markup.button.url(buttonLabel || 'Open Link', link)]);
-  }
+  if (link) rows.push([Markup.button.url(buttonLabel || 'Open Link', link)]);
   rows.push([Markup.button.url('✅ Complete & Verify', `https://t.me/${botName}?start=submit_${taskId}`)]);
   return Markup.inlineKeyboard(rows);
 }
@@ -82,99 +74,61 @@ function approvalKeyboard(subId) {
 
 function adminMainKeyboard(groupName, canSwitch) {
   const rows = [
-    [
-      Markup.button.callback('➕ New Task',    'admin_create_task'),
-      Markup.button.callback('⚡ New Raid',    'admin_create_raid'),
-    ],
-    [
-      Markup.button.callback('📋 View Tasks',  'admin_view_tasks'),
-      Markup.button.callback('🗑 Delete Task', 'admin_delete_task_menu'),
-    ],
-    [
-      Markup.button.callback('📢 Announce',    'admin_announce'),
-      Markup.button.callback('✉️ DM All',      'admin_dm_all'),
-    ],
-    [
-      Markup.button.callback('👥 Users',       'admin_view_users'),
-      Markup.button.callback('📊 Stats',       'admin_stats'),
-    ],
-    [
-      Markup.button.callback('🚫 Ban',         'admin_ban'),
-      Markup.button.callback('✅ Unban',       'admin_unban'),
-    ],
-    [
-      Markup.button.callback('➕ Add Admin',   'admin_add_admin'),
-      Markup.button.callback('➖ Rem Admin',   'admin_rem_admin'),
-    ],
-    [
-      Markup.button.callback('🔒 WL Add',      'admin_wl_add'),
-      Markup.button.callback('🔓 WL Remove',   'admin_wl_remove'),
-      Markup.button.callback('📄 WL View',     'admin_wl_view'),
-    ],
-    [
-      Markup.button.callback('Mode: All',       'admin_mode_all'),
-      Markup.button.callback('Mode: Group',     'admin_mode_group'),
-      Markup.button.callback('Mode: WL',        'admin_mode_whitelist'),
-    ],
-    [
-      Markup.button.callback('⚙️ Topics',      'admin_setup_topics'),
-      Markup.button.callback('📧 Email',        'admin_add_email'),
-      Markup.button.callback('🔗 Link',         'admin_set_link'),
-    ],
+    [Markup.button.callback('➕ New Task', 'admin_create_task'), Markup.button.callback('⚡ New Raid', 'admin_create_raid')],
+    [Markup.button.callback('📋 View Tasks', 'admin_view_tasks'), Markup.button.callback('🗑 Delete Task', 'admin_delete_task_menu')],
+    [Markup.button.callback('📢 Announce', 'admin_announce'), Markup.button.callback('✉️ DM All', 'admin_dm_all')],
+    [Markup.button.callback('👥 Users', 'admin_view_users'), Markup.button.callback('📊 Stats', 'admin_stats')],
+    [Markup.button.callback('🚫 Ban', 'admin_ban'), Markup.button.callback('✅ Unban', 'admin_unban')],
+    [Markup.button.callback('➕ Add Admin', 'admin_add_admin'), Markup.button.callback('➖ Rem Admin', 'admin_rem_admin')],
+    [Markup.button.callback('🔒 WL Add', 'admin_wl_add'), Markup.button.callback('🔓 WL Remove', 'admin_wl_remove'), Markup.button.callback('📄 WL View', 'admin_wl_view')],
+    [Markup.button.callback('Mode: All', 'admin_mode_all'), Markup.button.callback('Mode: Group', 'admin_mode_group'), Markup.button.callback('Mode: WL', 'admin_mode_whitelist')],
+    [Markup.button.callback('⚙️ Topics', 'admin_setup_topics'), Markup.button.callback('🔗 Set Link', 'admin_set_link')],
+    ...(canSwitch ? [[Markup.button.callback('🔄 Switch Group', 'admin_switch_group')]] : []),
+    [[Markup.button.callback('Close', 'admin_close')]],
   ];
-
-  if (canSwitch) {
-    rows.push([Markup.button.callback('🔄 Switch Group', 'admin_switch_group')]);
-  }
-  rows.push([Markup.button.callback('Close', 'admin_close')]);
-  return Markup.inlineKeyboard(rows);
+  return { parse_mode: 'HTML', ...Markup.inlineKeyboard(rows) };
 }
 
 function taskDeleteKeyboard(tasks) {
-  const rows = tasks.map(t => {
-    const label = `[${t.type === 'raid' ? 'Raid' : 'Task'}] ${t.title}`.slice(0, 60);
+  const rows = tasks.slice(0, 20).map(t => {
+    const icon  = t.type === 'raid' ? '⚡' : '📋';
+    const label = `${icon} ${t.title}`.slice(0, 50);
     return [Markup.button.callback(label, `del_task_${t.id}`)];
   });
-  rows.push([Markup.button.callback('Cancel', 'cancel_flow')]);
+  rows.push([Markup.button.callback('❌ Cancel', 'cancel_flow')]);
   return Markup.inlineKeyboard(rows);
 }
 
 function topicsSetupKeyboard() {
-  const topics = [
-    'getstarted', 'notifications', 'quests', 'raids',
-    'leaderboard', 'connect', 'announcements', 'submissions', 'general',
-  ];
-  const rows = topics.map(t => [Markup.button.callback(t, `set_topic_${t}`)]);
-  rows.push([Markup.button.callback('Back', 'back_admin')]);
+  const types = ['getstarted', 'notifications', 'quests', 'raids', 'leaderboard', 'announcements', 'submissions'];
+  const rows = types.map(t => [Markup.button.callback(t, `set_topic_${t}`)]);
+  rows.push([Markup.button.callback('❌ Cancel', 'cancel_flow')]);
   return Markup.inlineKeyboard(rows);
 }
 
 function groupSelectorKeyboard(groups) {
-  const rows = groups.map(g => [
-    Markup.button.callback(
-      (g.name || g.groupName || g.id).toString().slice(0, 40),
-      `select_group_${g.id}`
-    ),
-  ]);
+  const rows = groups.map(g => [Markup.button.callback(g.name || g.id, `admin_select_group_${g.id}`)]);
+  rows.push([Markup.button.callback('❌ Cancel', 'cancel_flow')]);
   return Markup.inlineKeyboard(rows);
 }
 
 function platformSelectKeyboard(kind) {
   return Markup.inlineKeyboard([
-    [
-      Markup.button.callback('🐦 Twitter/X', `admin_platform_${kind}_twitter`),
-      Markup.button.callback('✈️ Telegram',  `admin_platform_${kind}_telegram`),
-    ],
+    [Markup.button.callback('🐦 Twitter / X', `admin_platform_${kind}_twitter`)],
+    [Markup.button.callback('✈️ Telegram', `admin_platform_${kind}_telegram`)],
     [Markup.button.callback('❌ Cancel', 'cancel_flow')],
   ]);
 }
 
-function taskTypeKeyboard(kind, platform) {
-  if (platform === 'telegram') {
+function taskTypeKeyboard(kind, isMulti = false) {
+  if (isMulti) {
     return Markup.inlineKeyboard([
-      [Markup.button.callback('Join Channel/Group', `admin_tasktype_${kind}_join`)],
-      [Markup.button.callback('React to Message',   `admin_tasktype_${kind}_react`)],
-      [Markup.button.callback('Send Message',       `admin_tasktype_${kind}_send`)],
+      [Markup.button.callback('Retweet', `admin_tasktype_${kind}_retweet`)],
+      [Markup.button.callback('Comment', `admin_tasktype_${kind}_comment`)],
+      [Markup.button.callback('Quote Tweet', `admin_tasktype_${kind}_quote`)],
+      [Markup.button.callback('Join', `admin_tasktype_${kind}_join`)],
+      [Markup.button.callback('React', `admin_tasktype_${kind}_react`)],
+      [Markup.button.callback('Send', `admin_tasktype_${kind}_send`)],
       [Markup.button.callback('Cancel', 'cancel_flow')],
     ]);
   }
@@ -200,28 +154,13 @@ function twitterMultiActionKeyboard(selected = {}) {
     const label = selected[a.key] ? `✅ ${a.label}` : a.label;
     return [Markup.button.callback(label, `admin_ttoggle_${a.key}`)];
   });
-  rows.push([
-    Markup.button.callback('✔ Confirm', 'admin_tconfirm'),
-    Markup.button.callback('❌ Cancel', 'cancel_flow'),
-  ]);
+  rows.push([Markup.button.callback('✔ Confirm', 'admin_tconfirm'), Markup.button.callback('❌ Cancel', 'cancel_flow')]);
   return Markup.inlineKeyboard(rows);
 }
 
 module.exports = {
-  cancelKeyboard,
-  mainMenuKeyboard,
-  profileKeyboard,
-  settingsKeyboard,
-  oauthConnectKeyboard,
-  taskListKeyboard,
-  taskCardKeyboard,
-  taskCardDMKeyboard,
-  approvalKeyboard,
-  adminMainKeyboard,
-  taskDeleteKeyboard,
-  topicsSetupKeyboard,
-  groupSelectorKeyboard,
-  platformSelectKeyboard,
-  taskTypeKeyboard,
-  twitterMultiActionKeyboard,
+  cancelKeyboard, mainMenuKeyboard, profileKeyboard, settingsKeyboard, oauthConnectKeyboard,
+  taskListKeyboard, taskCardKeyboard, taskCardDMKeyboard, approvalKeyboard, adminMainKeyboard,
+  taskDeleteKeyboard, topicsSetupKeyboard, groupSelectorKeyboard, platformSelectKeyboard,
+  taskTypeKeyboard, twitterMultiActionKeyboard,
 };

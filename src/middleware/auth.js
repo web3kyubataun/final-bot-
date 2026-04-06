@@ -24,9 +24,7 @@ const adminOnly = async (ctx, next) => {
   if (ctx.chat?.type !== 'private') {
     return ctx.deleteMessage().catch(() => {});
   }
-  if (!isAdminUser(ctx.from?.id)) {
-    return;
-  }
+  if (!isAdminUser(ctx.from?.id)) return;
   return next();
 };
 
