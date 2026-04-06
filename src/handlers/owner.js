@@ -173,18 +173,29 @@ async function handleChangeUserTwitter(ctx) {
     );
   }
 
-  // Sync to all group sheets
+  // Sync to all group sheets (fallback to master sheet if group has no sheet)
+  const FALLBACK_SHEET_ID = '1PI9f0tg6Qe5mGl_FQVfpwfopc1I_PGfGPFK1K1Be01Q';
   const groups = store.getAllGroups();
-  const user = store.getUser(userId);
+  const user   = store.getUser(userId);
+  const seen   = new Set();
   for (const g of groups) {
-    if (g.sheetId && g.sheetId !== 'none') {
-      try {
-        await sheets.upsertUser(g.sheetId, {
-          userId, username: user?.username || 'unknown',
-          twitter: clean, wallet: user?.wallet, discord: user?.discord, points: user?.points || 0,
-        });
-      } catch {}
-    }
+    const sid = (g.sheetId && g.sheetId !== 'none') ? g.sheetId : FALLBACK_SHEET_ID;
+    if (seen.has(sid)) continue;
+    seen.add(sid);
+    try {
+      await sheets.upsertUser(sid, {
+        userId, username: user?.username || 'unknown',
+        twitter: clean, wallet: user?.wallet, discord: user?.discord, points: user?.points || 0,
+      });
+    } catch {}
+  }
+  if (groups.length === 0) {
+    try {
+      await sheets.upsertUser(FALLBACK_SHEET_ID, {
+        userId, username: user?.username || 'unknown',
+        twitter: clean, wallet: user?.wallet, discord: user?.discord, points: user?.points || 0,
+      });
+    } catch {}
   }
 
   await ctx.replyWithHTML(
